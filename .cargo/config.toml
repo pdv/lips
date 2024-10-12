@@ -1,0 +1,9 @@
+[alias]
+r = "run --target thumbv7em-none-eabihf"
+t = "test -p lips-lang"
+
+[target.thumbv7em-none-eabihf]
+rustflags = [
+  "-C", "link-arg=-Tlink.x",
+]
+runner = "probe-rs run --chip nrf52833_xxAA --probe 0d28:0204"

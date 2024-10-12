@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "crates/lips-lang",
+    "crates/lips-app"
+]
+resolver = "2"
