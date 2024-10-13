@@ -121,13 +121,14 @@ impl Runtime {
         Ok(Pointer(self.workspace.len() as u16 - 1))
     }
 
-    pub fn deref(&self, pointer: Pointer) -> Result<&Object, Error> {
+    pub fn deref(&self, pointer: Pointer) -> Result<Object, Error> {
         if pointer.0 == 0 {
             return Err(Error::NullPointer);
         }
         self.workspace
             .get(pointer.0 as usize)
             .ok_or(Error::NullPointer)
+            .copied()
     }
 
     fn read_rest(&mut self, cursor: &mut Cursor) -> Result<Pointer, Error> {
@@ -165,27 +166,27 @@ impl Runtime {
         let Object::Cons(car, _) = self.deref(pointer)? else {
             return Err(Error::TypeError);
         };
-        Ok(*car)
+        Ok(car)
     }
 
     fn snd(&self, pointer: Pointer) -> Result<Pointer, Error> {
         let Object::Cons(_, cdr) = self.deref(pointer)? else {
             return Err(Error::TypeError);
         };
-        let Object::Cons(car, _) = self.deref(*cdr)? else {
+        let Object::Cons(car, _) = self.deref(cdr)? else {
             return Err(Error::TypeError);
         };
-        Ok(*car)
+        Ok(car)
     }
 
     fn lookup(&mut self, env: Pointer, id: u8) -> Result<Pointer, Error> {
         match self.deref(env)? {
-            Object::Cons(car, cdr) => match self.deref(*car)? {
+            Object::Cons(car, cdr) => match self.deref(car)? {
                 Object::Cons(key, value) => {
-                    if self.deref(*key)? == &Object::Symbol(Symbol::Identifier(id)) {
-                        Ok(*value)
+                    if self.deref(key)? == Object::Symbol(Symbol::Identifier(id)) {
+                        Ok(value)
                     } else {
-                        self.lookup(*cdr, id)
+                        self.lookup(cdr, id)
                     }
                 }
                 _ => Err(Error::TypeError),
@@ -196,7 +197,7 @@ impl Runtime {
 
     pub fn eval(&mut self, form: Pointer, env: Pointer) -> Result<Pointer, Error> {
         println!("evaling {:?}", form);
-        match *self.deref(form)? {
+        match self.deref(form)? {
             Object::Int(_) => Ok(form),
             Object::Symbol(symbol) => match symbol {
                 Symbol::Identifier(id) => self.lookup(env, id),
@@ -204,7 +205,7 @@ impl Runtime {
             },
             Object::Cons(car, cdr) => {
                 let car = self.eval(car, env)?;
-                match *self.deref(car)? {
+                match self.deref(car)? {
                     Object::Symbol(symbol) => match symbol {
                         Symbol::Add => {
                             let a = self.eval(self.fst(cdr)?, env)?;
@@ -232,10 +233,10 @@ impl Runtime {
                             } else if params == NIL {
                                 break;
                             }
-                            let Object::Cons(param, rparams) = *self.deref(params)? else {
+                            let Object::Cons(param, rparams) = self.deref(params)? else {
                                 return Err(Error::TypeError);
                             };
-                            let Object::Cons(arg, rargs) = *self.deref(args)? else {
+                            let Object::Cons(arg, rargs) = self.deref(args)? else {
                                 return Err(Error::TypeError);
                             };
                             let arg = self.eval(arg, env)?;
@@ -288,7 +289,7 @@ mod tests {
         let next = runtime.alloc(Object::Cons(a, end)).unwrap();
         let head = runtime.alloc(Object::Cons(symbol, next)).unwrap();
         let res = runtime.eval(head, NIL).unwrap();
-        assert_eq!(*runtime.deref(res).unwrap(), Object::Int(3));
+        assert_eq!(runtime.deref(res).unwrap(), Object::Int(3));
     }
 
     #[test]
@@ -330,7 +331,7 @@ mod tests {
         let mut runtime = Runtime::new();
         let ptr = runtime.read_str("(+ 1 2)").unwrap();
         let res = runtime.eval(ptr, NIL).unwrap();
-        assert_eq!(*runtime.deref(res).unwrap(), Object::Int(3));
+        assert_eq!(runtime.deref(res).unwrap(), Object::Int(3));
     }
 
     #[test]
@@ -338,7 +339,7 @@ mod tests {
         let mut runtime = Runtime::new();
         let ptr = runtime.read_str("(+ (+ 1 2) (+ 3 4))").unwrap();
         let res = runtime.eval(ptr, NIL).unwrap();
-        assert_eq!(*runtime.deref(res).unwrap(), Object::Int(10));
+        assert_eq!(runtime.deref(res).unwrap(), Object::Int(10));
     }
 
     #[test]
@@ -352,7 +353,7 @@ mod tests {
         let env = runtime.alloc(Object::Cons(lookup, NIL)).unwrap();
         let form = runtime.read_str("(+ x 1)").unwrap();
         let res = runtime.eval(form, env).unwrap();
-        assert_eq!(*runtime.deref(res).unwrap(), Object::Int(43));
+        assert_eq!(runtime.deref(res).unwrap(), Object::Int(43));
     }
 
     #[test]
@@ -361,7 +362,16 @@ mod tests {
         let form = runtime.read_str("((fn (x) x) 42)").unwrap();
         std::println!("{}", runtime);
         let res = runtime.eval(form, NIL).unwrap();
-        let res = *runtime.deref(res).unwrap();
+        let res = runtime.deref(res).unwrap();
         assert_eq!(res, Object::Int(42));
+    }
+
+    #[test]
+    fn test_fn() {
+        let mut runtime = Runtime::new();
+        let form = runtime.read_str("((fn (x) (x 1)) (fn (x) x))").unwrap();
+        let res = runtime.eval(form, NIL).unwrap();
+        let res = runtime.deref(res).unwrap();
+        assert_eq!(res, Object::Int(1));
     }
 }
