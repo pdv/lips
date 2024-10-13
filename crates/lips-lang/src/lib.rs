@@ -148,12 +148,11 @@ impl Runtime {
             Token::OpenParen => self.read_rest(cursor),
             Token::CloseParen => Ok(NIL),
             Token::Int(i) => self.alloc(Object::Int(i)),
-            Token::Symbol(s) => match s {
-                "+" => self.alloc(Object::Symbol(Symbol::Add)),
-                "x" => self.alloc(Object::Symbol(Symbol::Identifier(b'x'))),
-                "fn" => self.alloc(Object::Symbol(Symbol::Lambda)),
-                _ => Err(Error::UnknownSymbol),
-            },
+            Token::Symbol(s) => self.alloc(Object::Symbol(match s {
+                "+" => Symbol::Add,
+                "fn" => Symbol::Lambda,
+                _ => Symbol::Identifier(s.as_bytes()[0]),
+            })),
         }
     }
 
@@ -180,19 +179,71 @@ impl Runtime {
     }
 
     fn lookup(&mut self, env: Pointer, id: u8) -> Result<Pointer, Error> {
-        match self.deref(env)? {
-            Object::Cons(car, cdr) => match self.deref(car)? {
-                Object::Cons(key, value) => {
-                    if self.deref(key)? == Object::Symbol(Symbol::Identifier(id)) {
-                        Ok(value)
-                    } else {
-                        self.lookup(cdr, id)
-                    }
-                }
-                _ => Err(Error::TypeError),
-            },
-            _ => Err(Error::NotFound),
+        let Object::Cons(car, cdr) = self.deref(env)? else {
+            return Err(Error::NotFound);
+        };
+        let Object::Cons(key, value) = self.deref(car)? else {
+            return Err(Error::TypeError);
+        };
+        let Object::Symbol(Symbol::Identifier(key)) = self.deref(key)? else {
+            return Err(Error::TypeError);
+        };
+        if key == id {
+            Ok(value)
+        } else {
+            self.lookup(cdr, id)
         }
+    }
+
+    fn builtin(&mut self, symbol: Symbol, args: Pointer, env: Pointer) -> Result<Pointer, Error> {
+        match symbol {
+            Symbol::Add => {
+                let a = self.eval(self.fst(args)?, env)?;
+                let b = self.eval(self.snd(args)?, env)?;
+                match (self.deref(a)?, self.deref(b)?) {
+                    (Object::Int(x), Object::Int(y)) => self.alloc(Object::Int(x + y)),
+                    _ => Err(Error::TypeError),
+                }
+            }
+            Symbol::Lambda => {
+                let params = self.fst(args)?;
+                let body = self.snd(args)?;
+                self.alloc(Object::Cons(params, body))
+            }
+            _ => Err(Error::UnknownSymbol),
+        }
+    }
+
+    fn apply(
+        &mut self,
+        params: Pointer,
+        args: Pointer,
+        body: Pointer,
+        env: Pointer,
+    ) -> Result<Pointer, Error> {
+        let mut env = env;
+        let mut params = params;
+        let mut args = args;
+        loop {
+            dbg!(env, params, args);
+            if (params == NIL) != (args == NIL) {
+                return Err(Error::ArgCount);
+            } else if params == NIL {
+                break;
+            }
+            let Object::Cons(param, rparams) = self.deref(params)? else {
+                return Err(Error::TypeError);
+            };
+            let Object::Cons(arg, rargs) = self.deref(args)? else {
+                return Err(Error::TypeError);
+            };
+            let arg = self.eval(arg, env)?;
+            let assignment = self.alloc(Object::Cons(param, arg))?;
+            env = self.alloc(Object::Cons(assignment, env))?;
+            params = rparams;
+            args = rargs;
+        }
+        self.eval(body, env)
     }
 
     pub fn eval(&mut self, form: Pointer, env: Pointer) -> Result<Pointer, Error> {
@@ -203,50 +254,11 @@ impl Runtime {
                 Symbol::Identifier(id) => self.lookup(env, id),
                 _ => Ok(form),
             },
-            Object::Cons(car, cdr) => {
-                let car = self.eval(car, env)?;
-                match self.deref(car)? {
-                    Object::Symbol(symbol) => match symbol {
-                        Symbol::Add => {
-                            let a = self.eval(self.fst(cdr)?, env)?;
-                            let b = self.eval(self.snd(cdr)?, env)?;
-                            match (self.deref(a)?, self.deref(b)?) {
-                                (Object::Int(x), Object::Int(y)) => self.alloc(Object::Int(x + y)),
-                                _ => Err(Error::TypeError),
-                            }
-                        }
-                        Symbol::Lambda => {
-                            let params = self.fst(cdr)?;
-                            let body = self.snd(cdr)?;
-                            self.alloc(Object::Cons(params, body))
-                        }
-                        _ => Err(Error::UnknownSymbol),
-                    },
-                    Object::Cons(params, body) => {
-                        let mut env = env;
-                        let mut params = params;
-                        let mut args = cdr;
-                        loop {
-                            dbg!(env, params, args);
-                            if (params == NIL) != (args == NIL) {
-                                return Err(Error::ArgCount);
-                            } else if params == NIL {
-                                break;
-                            }
-                            let Object::Cons(param, rparams) = self.deref(params)? else {
-                                return Err(Error::TypeError);
-                            };
-                            let Object::Cons(arg, rargs) = self.deref(args)? else {
-                                return Err(Error::TypeError);
-                            };
-                            let arg = self.eval(arg, env)?;
-                            let assignment = self.alloc(Object::Cons(param, arg))?;
-                            env = self.alloc(Object::Cons(assignment, env))?;
-                            params = rparams;
-                            args = rargs;
-                        }
-                        self.eval(body, env)
-                    }
+            Object::Cons(func, args) => {
+                let func = self.eval(func, env)?;
+                match self.deref(func)? {
+                    Object::Symbol(symbol) => self.builtin(symbol, args, env),
+                    Object::Cons(params, body) => self.apply(params, args, body, env),
                     _ => Err(Error::TypeError),
                 }
             }
