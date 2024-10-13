@@ -11,8 +11,13 @@ pub const NIL: Pointer = Pointer(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Symbol {
+    Nil,
+    Def,
     Add,
+    Sub,
     Lambda,
+    If,
+    Lt,
     Identifier(u8),
 }
 
@@ -84,9 +89,9 @@ impl<'a> Iterator for Cursor<'a> {
                 self.eat_one();
                 return self.next();
             }
-            _ => Ok(Token::Symbol(
-                self.eat_while(|c| c.is_alphanumeric() || c == '+'),
-            )),
+            _ => Ok(Token::Symbol(self.eat_while(|c| {
+                c.is_alphanumeric() || c == '+' || c == '-' || c == '<'
+            }))),
         };
         Some(token)
     }
@@ -94,7 +99,8 @@ impl<'a> Iterator for Cursor<'a> {
 
 #[derive(Debug)]
 pub struct Runtime {
-    workspace: Vec<Object, 300>,
+    workspace: Vec<Object, 1000>,
+    env: Pointer,
 }
 
 #[derive(Debug)]
@@ -113,7 +119,10 @@ impl Runtime {
     pub fn new() -> Self {
         let mut workspace = Vec::new();
         workspace.push(Object::Int(0)).unwrap();
-        Runtime { workspace }
+        Runtime {
+            workspace,
+            env: NIL,
+        }
     }
 
     fn alloc(&mut self, obj: Object) -> Result<Pointer, Error> {
@@ -149,8 +158,13 @@ impl Runtime {
             Token::CloseParen => Ok(NIL),
             Token::Int(i) => self.alloc(Object::Int(i)),
             Token::Symbol(s) => self.alloc(Object::Symbol(match s {
+                "nil" => Symbol::Nil,
+                "def" => Symbol::Def,
                 "+" => Symbol::Add,
+                "-" => Symbol::Sub,
                 "fn" => Symbol::Lambda,
+                "if" => Symbol::If,
+                "<" => Symbol::Lt,
                 _ => Symbol::Identifier(s.as_bytes()[0]),
             })),
         }
@@ -178,9 +192,26 @@ impl Runtime {
         Ok(car)
     }
 
-    fn lookup(&mut self, env: Pointer, id: u8) -> Result<Pointer, Error> {
+    fn thrd(&self, pointer: Pointer) -> Result<Pointer, Error> {
+        let Object::Cons(_, cdr) = self.deref(pointer)? else {
+            return Err(Error::TypeError);
+        };
+        let Object::Cons(_, cdr) = self.deref(cdr)? else {
+            return Err(Error::TypeError);
+        };
+        let Object::Cons(car, _) = self.deref(cdr)? else {
+            return Err(Error::TypeError);
+        };
+        Ok(car)
+    }
+
+    fn lookup(&mut self, env: Pointer, id: u8) -> Result<Option<Pointer>, Error> {
+        dbg!(env, id);
+        if env == NIL {
+            return Ok(None);
+        }
         let Object::Cons(car, cdr) = self.deref(env)? else {
-            return Err(Error::NotFound);
+            return Err(Error::TypeError);
         };
         let Object::Cons(key, value) = self.deref(car)? else {
             return Err(Error::TypeError);
@@ -188,8 +219,9 @@ impl Runtime {
         let Object::Symbol(Symbol::Identifier(key)) = self.deref(key)? else {
             return Err(Error::TypeError);
         };
+        dbg!(key, id);
         if key == id {
-            Ok(value)
+            Ok(Some(value))
         } else {
             self.lookup(cdr, id)
         }
@@ -197,6 +229,14 @@ impl Runtime {
 
     fn builtin(&mut self, symbol: Symbol, args: Pointer, env: Pointer) -> Result<Pointer, Error> {
         match symbol {
+            Symbol::Nil => Ok(NIL),
+            Symbol::Def => {
+                let key = self.fst(args)?;
+                let value = self.eval(self.snd(args)?, env)?;
+                let entry = self.alloc(Object::Cons(key, value))?;
+                self.env = self.alloc(Object::Cons(entry, self.env))?;
+                Ok(key)
+            }
             Symbol::Add => {
                 let a = self.eval(self.fst(args)?, env)?;
                 let b = self.eval(self.snd(args)?, env)?;
@@ -205,12 +245,42 @@ impl Runtime {
                     _ => Err(Error::TypeError),
                 }
             }
+            Symbol::Sub => {
+                let a = self.eval(self.fst(args)?, env)?;
+                let b = self.eval(self.snd(args)?, env)?;
+                match (self.deref(a)?, self.deref(b)?) {
+                    (Object::Int(x), Object::Int(y)) => self.alloc(Object::Int(x - y)),
+                    _ => Err(Error::TypeError),
+                }
+            }
             Symbol::Lambda => {
                 let params = self.fst(args)?;
                 let body = self.snd(args)?;
                 self.alloc(Object::Cons(params, body))
             }
-            _ => Err(Error::UnknownSymbol),
+            Symbol::If => {
+                let cond = self.eval(self.fst(args)?, env)?;
+                if cond != NIL {
+                    self.eval(self.snd(args)?, env)
+                } else {
+                    self.eval(self.thrd(args)?, env)
+                }
+            }
+            Symbol::Lt => {
+                let a = self.eval(self.fst(args)?, env)?;
+                let b = self.eval(self.snd(args)?, env)?;
+                match (self.deref(a)?, self.deref(b)?) {
+                    (Object::Int(x), Object::Int(y)) => {
+                        if x < y {
+                            Ok(b)
+                        } else {
+                            Ok(NIL)
+                        }
+                    }
+                    _ => Err(Error::TypeError),
+                }
+            }
+            Symbol::Identifier(_) => Err(Error::TypeError),
         }
     }
 
@@ -225,7 +295,6 @@ impl Runtime {
         let mut params = params;
         let mut args = args;
         loop {
-            dbg!(env, params, args);
             if (params == NIL) != (args == NIL) {
                 return Err(Error::ArgCount);
             } else if params == NIL {
@@ -247,11 +316,15 @@ impl Runtime {
     }
 
     pub fn eval(&mut self, form: Pointer, env: Pointer) -> Result<Pointer, Error> {
-        println!("evaling {:?}", form);
         match self.deref(form)? {
             Object::Int(_) => Ok(form),
             Object::Symbol(symbol) => match symbol {
-                Symbol::Identifier(id) => self.lookup(env, id),
+                Symbol::Nil => Ok(NIL),
+                Symbol::Identifier(id) => self
+                    .lookup(env, id)
+                    .transpose()
+                    .or(self.lookup(self.env, id).transpose())
+                    .unwrap_or(Err(Error::NotFound)),
                 _ => Ok(form),
             },
             Object::Cons(func, args) => {
@@ -385,5 +458,53 @@ mod tests {
         let res = runtime.eval(form, NIL).unwrap();
         let res = runtime.deref(res).unwrap();
         assert_eq!(res, Object::Int(1));
+    }
+
+    #[test]
+    fn test_if() {
+        let mut runtime = Runtime::new();
+        let form = runtime.read_str("(if nil 1 2)").unwrap();
+        let res = runtime.eval(form, NIL).unwrap();
+        let res = runtime.deref(res).unwrap();
+        assert_eq!(res, Object::Int(2));
+        let form = runtime.read_str("(if 99 1 2)").unwrap();
+        let res = runtime.eval(form, NIL).unwrap();
+        let res = runtime.deref(res).unwrap();
+        assert_eq!(res, Object::Int(1));
+    }
+
+    #[test]
+    fn test_math() {
+        let mut runtime = Runtime::new();
+        let form = runtime.read_str("(if (< 2 (- 8 3)) 1 4)").unwrap();
+        let res = runtime.eval(form, NIL).unwrap();
+        let res = runtime.deref(res).unwrap();
+        assert_eq!(res, Object::Int(1));
+    }
+
+    #[test]
+    fn test_def() {
+        let mut runtime = Runtime::new();
+        let form = runtime.read_str("(def x 2)").unwrap();
+        let res = runtime.eval(form, NIL).unwrap();
+        println!("{}", runtime);
+        let form = runtime.read_str("(+ x 1)").unwrap();
+        let res = runtime.eval(form, NIL).unwrap();
+        let res = runtime.deref(res).unwrap();
+        assert_eq!(res, Object::Int(3));
+    }
+
+    #[test]
+    fn test_fib() {
+        let mut runtime = Runtime::new();
+        let form = runtime
+            .read_str("(def fib (fn (n) (if (< n 3) 1 (+ (fib (- n 1)) (fib (- n 2))))))")
+            .unwrap();
+        let res = runtime.eval(form, NIL).unwrap();
+        println!("{}", runtime);
+        let form = runtime.read_str("(fib 10)").unwrap();
+        let res = runtime.eval(form, NIL).unwrap();
+        let res = runtime.deref(res).unwrap();
+        assert_eq!(res, Object::Int(55));
     }
 }

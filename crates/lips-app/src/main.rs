@@ -36,26 +36,32 @@ fn main() -> ! {
     let mut rx_buffer: [u8; 1] = [0];
     loop {
         serial.read(&mut rx_buffer).unwrap();
-        serial.write(&rx_buffer).unwrap();
         rprintln!("{}", rx_buffer[0]);
         match rx_buffer[0] {
-            b'\n' | b'\r' => match input.as_str() {
-                "\\dump" => {
-                    writeln!(serial, "{}", runtime).unwrap();
+            b'\n' | b'\r' => {
+                writeln!(serial, "").unwrap();
+                match input.as_str() {
+                    "\\dump" => {
+                        writeln!(serial, "{}", runtime).unwrap();
+                    }
+                    _ => {
+                        let statement = runtime.read_str(input.as_str()).unwrap();
+                        let output = runtime.eval(statement, NIL).unwrap();
+                        let obj = runtime.deref(output).unwrap();
+                        writeln!(serial, "{}", obj).unwrap();
+                    }
                 }
-                _ => {
-                    writeln!(serial, "\r").unwrap();
-                    let statement = runtime.read_str(input.as_str()).unwrap();
-                    let output = runtime.eval(statement, NIL).unwrap();
-                    let obj = runtime.deref(output).unwrap();
-                    writeln!(serial, "{}\r", obj).unwrap();
-                    write!(serial, "> ").unwrap();
-                    input.clear();
+                input.clear();
+                write!(serial, "> ").unwrap();
+            }
+            127 => {
+                if input.pop().is_some() {
+                    serial.write(&rx_buffer).unwrap();
                 }
-            },
-            0x08 => _ = input.pop(),
+            }
             _ => {
                 input.push(rx_buffer[0].into());
+                serial.write(&rx_buffer).unwrap();
             }
         }
     }
