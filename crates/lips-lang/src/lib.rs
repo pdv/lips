@@ -1,4 +1,4 @@
-#![no_std]
+// #![no_std]
 
 use core::{fmt, str::Chars};
 
@@ -12,6 +12,7 @@ pub const NIL: Pointer = Pointer(0);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Symbol {
     Add,
+    Lambda,
     Identifier(u8),
 }
 
@@ -105,6 +106,7 @@ pub enum Error {
     UnknownSymbol,
     TypeError,
     SyntaxError,
+    ArgCount,
 }
 
 impl Runtime {
@@ -148,6 +150,7 @@ impl Runtime {
             Token::Symbol(s) => match s {
                 "+" => self.alloc(Object::Symbol(Symbol::Add)),
                 "x" => self.alloc(Object::Symbol(Symbol::Identifier(b'x'))),
+                "fn" => self.alloc(Object::Symbol(Symbol::Lambda)),
                 _ => Err(Error::UnknownSymbol),
             },
         }
@@ -191,27 +194,61 @@ impl Runtime {
         }
     }
 
-    pub fn eval(&mut self, pointer: Pointer, env: Pointer) -> Result<Pointer, Error> {
-        match *self.deref(pointer)? {
-            Object::Int(_) => Ok(pointer),
+    pub fn eval(&mut self, form: Pointer, env: Pointer) -> Result<Pointer, Error> {
+        println!("evaling {:?}", form);
+        match *self.deref(form)? {
+            Object::Int(_) => Ok(form),
             Object::Symbol(symbol) => match symbol {
                 Symbol::Identifier(id) => self.lookup(env, id),
-                _ => Err(Error::TypeError),
+                _ => Ok(form),
             },
-            Object::Cons(car, cdr) => match self.deref(car)? {
-                Object::Symbol(symbol) => match symbol {
-                    Symbol::Add => {
-                        let a = self.eval(self.fst(cdr)?, env)?;
-                        let b = self.eval(self.snd(cdr)?, env)?;
-                        match (self.deref(a)?, self.deref(b)?) {
-                            (Object::Int(x), Object::Int(y)) => self.alloc(Object::Int(x + y)),
-                            _ => Err(Error::TypeError),
+            Object::Cons(car, cdr) => {
+                let car = self.eval(car, env)?;
+                match *self.deref(car)? {
+                    Object::Symbol(symbol) => match symbol {
+                        Symbol::Add => {
+                            let a = self.eval(self.fst(cdr)?, env)?;
+                            let b = self.eval(self.snd(cdr)?, env)?;
+                            match (self.deref(a)?, self.deref(b)?) {
+                                (Object::Int(x), Object::Int(y)) => self.alloc(Object::Int(x + y)),
+                                _ => Err(Error::TypeError),
+                            }
                         }
+                        Symbol::Lambda => {
+                            let params = self.fst(cdr)?;
+                            let body = self.snd(cdr)?;
+                            self.alloc(Object::Cons(params, body))
+                        }
+                        _ => Err(Error::UnknownSymbol),
+                    },
+                    Object::Cons(params, body) => {
+                        let mut env = env;
+                        let mut params = params;
+                        let mut args = cdr;
+                        loop {
+                            dbg!(env, params, args);
+                            if (params == NIL) != (args == NIL) {
+                                return Err(Error::ArgCount);
+                            } else if params == NIL {
+                                break;
+                            }
+                            let Object::Cons(param, rparams) = *self.deref(params)? else {
+                                return Err(Error::TypeError);
+                            };
+                            let Object::Cons(arg, rargs) = *self.deref(args)? else {
+                                return Err(Error::TypeError);
+                            };
+                            let arg = self.eval(arg, env)?;
+                            let assignment = self.alloc(Object::Cons(param, arg))?;
+                            env = self.alloc(Object::Cons(assignment, env))?;
+                            params = rparams;
+                            args = rargs;
+                        }
+                        self.eval(body, env)
                     }
-                    _ => Err(Error::UnknownSymbol),
-                },
-                _ => Err(Error::TypeError),
-            },
+                    _ => Err(Error::TypeError),
+                }
+            }
         }
     }
 }
@@ -229,7 +266,7 @@ impl core::fmt::Display for Object {
 impl core::fmt::Display for Runtime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (idx, obj) in self.workspace.iter().enumerate() {
-            writeln!(f, "{}: {:?}", idx, obj)?;
+            writeln!(f, "{}: {}", idx, obj)?;
         }
         Ok(())
     }
@@ -315,7 +352,16 @@ mod tests {
         let env = runtime.alloc(Object::Cons(lookup, NIL)).unwrap();
         let form = runtime.read_str("(+ x 1)").unwrap();
         let res = runtime.eval(form, env).unwrap();
-        std::println!("{}", &runtime);
         assert_eq!(*runtime.deref(res).unwrap(), Object::Int(43));
+    }
+
+    #[test]
+    fn test_lambda() {
+        let mut runtime = Runtime::new();
+        let form = runtime.read_str("((fn (x) x) 42)").unwrap();
+        std::println!("{}", runtime);
+        let res = runtime.eval(form, NIL).unwrap();
+        let res = *runtime.deref(res).unwrap();
+        assert_eq!(res, Object::Int(42));
     }
 }
