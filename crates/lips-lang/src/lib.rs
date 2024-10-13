@@ -7,22 +7,20 @@ use heapless::Vec;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pointer(u16);
 
-const NIL: Pointer = Pointer(0);
+pub const NIL: Pointer = Pointer(0);
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Symbol {
     Add,
+    Identifier(u8),
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Object {
-    Nil,
     Int(i32),
     Symbol(Symbol),
     Cons(Pointer, Pointer),
 }
-
-//    (cons '+ (cons 3 (cons 4 nil)))
 
 #[derive(Debug, PartialEq, Eq)]
 enum Token<'a> {
@@ -82,7 +80,6 @@ impl<'a> Iterator for Cursor<'a> {
                 .map(|i| Token::Int(i))
                 .map_err(|_| Error::TypeError),
             ' ' => {
-                // let _ = self.eat_while(|c| c.is_whitespace());
                 self.eat_one();
                 return self.next();
             }
@@ -102,6 +99,7 @@ pub struct Runtime {
 #[derive(Debug)]
 pub enum Error {
     EndOfFile,
+    NotFound,
     OutOfMemory,
     NullPointer,
     UnknownSymbol,
@@ -112,7 +110,7 @@ pub enum Error {
 impl Runtime {
     pub fn new() -> Self {
         let mut workspace = Vec::new();
-        workspace.push(Object::Nil).unwrap();
+        workspace.push(Object::Int(0)).unwrap();
         Runtime { workspace }
     }
 
@@ -122,6 +120,9 @@ impl Runtime {
     }
 
     pub fn deref(&self, pointer: Pointer) -> Result<&Object, Error> {
+        if pointer.0 == 0 {
+            return Err(Error::NullPointer);
+        }
         self.workspace
             .get(pointer.0 as usize)
             .ok_or(Error::NullPointer)
@@ -146,6 +147,7 @@ impl Runtime {
             Token::Int(i) => self.alloc(Object::Int(i)),
             Token::Symbol(s) => match s {
                 "+" => self.alloc(Object::Symbol(Symbol::Add)),
+                "x" => self.alloc(Object::Symbol(Symbol::Identifier(b'x'))),
                 _ => Err(Error::UnknownSymbol),
             },
         }
@@ -173,23 +175,42 @@ impl Runtime {
         Ok(*car)
     }
 
-    pub fn eval(&mut self, pointer: Pointer) -> Result<Pointer, Error> {
+    fn lookup(&mut self, env: Pointer, id: u8) -> Result<Pointer, Error> {
+        match self.deref(env)? {
+            Object::Cons(car, cdr) => match self.deref(*car)? {
+                Object::Cons(key, value) => {
+                    if self.deref(*key)? == &Object::Symbol(Symbol::Identifier(id)) {
+                        Ok(*value)
+                    } else {
+                        self.lookup(*cdr, id)
+                    }
+                }
+                _ => Err(Error::TypeError),
+            },
+            _ => Err(Error::NotFound),
+        }
+    }
+
+    pub fn eval(&mut self, pointer: Pointer, env: Pointer) -> Result<Pointer, Error> {
         match *self.deref(pointer)? {
-            Object::Nil => Ok(pointer),
             Object::Int(_) => Ok(pointer),
-            Object::Symbol(_) => Ok(pointer),
+            Object::Symbol(symbol) => match symbol {
+                Symbol::Identifier(id) => self.lookup(env, id),
+                _ => Err(Error::TypeError),
+            },
             Object::Cons(car, cdr) => match self.deref(car)? {
                 Object::Symbol(symbol) => match symbol {
                     Symbol::Add => {
-                        let a = self.eval(self.fst(cdr)?)?;
-                        let b = self.eval(self.snd(cdr)?)?;
+                        let a = self.eval(self.fst(cdr)?, env)?;
+                        let b = self.eval(self.snd(cdr)?, env)?;
                         match (self.deref(a)?, self.deref(b)?) {
                             (Object::Int(x), Object::Int(y)) => self.alloc(Object::Int(x + y)),
                             _ => Err(Error::TypeError),
                         }
                     }
+                    _ => Err(Error::UnknownSymbol),
                 },
-                _ => Err(Error::UnknownSymbol),
+                _ => Err(Error::TypeError),
             },
         }
     }
@@ -198,7 +219,6 @@ impl Runtime {
 impl core::fmt::Display for Object {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Object::Nil => write!(f, "nil"),
             Object::Int(i) => write!(f, "{}", i),
             Object::Symbol(s) => write!(f, "{:?}", s),
             Object::Cons(car, cdr) => write!(f, "({} {})", car.0, cdr.0),
@@ -230,7 +250,7 @@ mod tests {
         let end = runtime.alloc(Object::Cons(b, Pointer(100))).unwrap();
         let next = runtime.alloc(Object::Cons(a, end)).unwrap();
         let head = runtime.alloc(Object::Cons(symbol, next)).unwrap();
-        let res = runtime.eval(head).unwrap();
+        let res = runtime.eval(head, NIL).unwrap();
         assert_eq!(*runtime.deref(res).unwrap(), Object::Int(3));
     }
 
@@ -272,7 +292,7 @@ mod tests {
     fn test_read() {
         let mut runtime = Runtime::new();
         let ptr = runtime.read_str("(+ 1 2)").unwrap();
-        let res = runtime.eval(ptr).unwrap();
+        let res = runtime.eval(ptr, NIL).unwrap();
         assert_eq!(*runtime.deref(res).unwrap(), Object::Int(3));
     }
 
@@ -280,7 +300,22 @@ mod tests {
     fn test_nested() {
         let mut runtime = Runtime::new();
         let ptr = runtime.read_str("(+ (+ 1 2) (+ 3 4))").unwrap();
-        let res = runtime.eval(ptr).unwrap();
+        let res = runtime.eval(ptr, NIL).unwrap();
         assert_eq!(*runtime.deref(res).unwrap(), Object::Int(10));
+    }
+
+    #[test]
+    fn test_env() {
+        let mut runtime = Runtime::new();
+        let symbol = runtime
+            .alloc(Object::Symbol(Symbol::Identifier(b'x')))
+            .unwrap();
+        let value = runtime.alloc(Object::Int(42)).unwrap();
+        let lookup = runtime.alloc(Object::Cons(symbol, value)).unwrap();
+        let env = runtime.alloc(Object::Cons(lookup, NIL)).unwrap();
+        let form = runtime.read_str("(+ x 1)").unwrap();
+        let res = runtime.eval(form, env).unwrap();
+        std::println!("{}", &runtime);
+        assert_eq!(*runtime.deref(res).unwrap(), Object::Int(43));
     }
 }
