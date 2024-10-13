@@ -1,7 +1,8 @@
 #![no_main]
 #![no_std]
 
-use lips_lang;
+use heapless::String;
+use lips_lang::{self, Runtime};
 
 use core::fmt::Write;
 use panic_rtt_target as _;
@@ -26,15 +27,26 @@ fn main() -> ! {
         Baudrate::BAUD115200,
     );
 
-    write!(serial, "\r\n\n\n\nWelcome v2\r\n> ").unwrap();
-    // nb::block!(serial.flush()).unwrap();
+    writeln!(serial, "\r").unwrap();
+    writeln!(serial, "Welcome v2\r").unwrap();
+    write!(serial, "> ").unwrap();
+
+    let mut runtime = Runtime::new();
+    let mut input = String::<60>::new();
 
     let mut rx_buffer: [u8; 1] = [0];
     loop {
         serial.read(&mut rx_buffer).unwrap();
         if rx_buffer[0] == b'\r' {
-            write!(serial, "\r\n3\r\n> ").unwrap();
+            writeln!(serial, "\r").unwrap();
+            let statement = runtime.read_str(input.as_str()).unwrap();
+            let output = runtime.eval(statement).unwrap();
+            let obj = runtime.deref(output).unwrap();
+            writeln!(serial, "{}\r", obj).unwrap();
+            write!(serial, "> ").unwrap();
+            input.clear();
         } else {
+            input.push(rx_buffer[0].into());
             serial.write(&rx_buffer).unwrap();
         }
     }

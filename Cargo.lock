@@ -189,6 +189,9 @@ dependencies = [
 [[package]]
 name = "lips-lang"
 version = "0.1.0"
+dependencies = [
+ "heapless",
+]
 
 [[package]]
 name = "microbit-common"
