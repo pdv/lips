@@ -2,7 +2,7 @@
 #![no_std]
 
 use heapless::String;
-use lips_lang::{self, Runtime, NIL};
+use lips_lang::{self, Runtime};
 
 use core::fmt::Write;
 use panic_rtt_target as _;
@@ -27,8 +27,8 @@ fn main() -> ! {
         Baudrate::BAUD115200,
     );
 
-    writeln!(serial, "\n\nWelcome v2").unwrap();
-    write!(serial, "> ").unwrap();
+    writeln!(serial, "\r\n\nWelcome v3").unwrap();
+    write!(serial, "\r> ").unwrap();
 
     let mut runtime = Runtime::new();
     let mut input = String::<60>::new();
@@ -42,17 +42,15 @@ fn main() -> ! {
                 writeln!(serial, "").unwrap();
                 match input.as_str() {
                     "\\dump" => {
-                        writeln!(serial, "{}", runtime).unwrap();
+                        writeln!(serial, "\r{}", runtime).unwrap();
                     }
                     _ => {
-                        let statement = runtime.read_str(input.as_str()).unwrap();
-                        let output = runtime.eval(statement, NIL).unwrap();
-                        let obj = runtime.deref(output).unwrap();
-                        writeln!(serial, "{}", obj).unwrap();
+                        let obj= runtime.eval_str(input.as_str()).unwrap();
+                        writeln!(serial, "\r{}", obj).unwrap();
                     }
                 }
                 input.clear();
-                write!(serial, "> ").unwrap();
+                write!(serial, "\r> ").unwrap();
             }
             127 => {
                 if input.pop().is_some() {
@@ -60,7 +58,7 @@ fn main() -> ! {
                 }
             }
             _ => {
-                input.push(rx_buffer[0].into());
+                input.push(rx_buffer[0].into()).unwrap();
                 serial.write(&rx_buffer).unwrap();
             }
         }
