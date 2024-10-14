@@ -31,7 +31,7 @@ fn main() -> ! {
     write!(serial, "\r> ").unwrap();
 
     let mut runtime = Runtime::new();
-    let mut input = String::<60>::new();
+    let mut input = String::<100>::new();
 
     let mut rx_buffer: [u8; 1] = [0];
     loop {
@@ -44,9 +44,13 @@ fn main() -> ! {
                     "\\dump" => {
                         writeln!(serial, "\r{}", runtime).unwrap();
                     }
-                    _ => {
-                        let obj= runtime.eval_str(input.as_str()).unwrap();
-                        writeln!(serial, "\r{}", obj).unwrap();
+                    "\\gc" => {
+                        runtime.gc().unwrap();
+                        writeln!(serial, "").unwrap();
+                    }
+                    _ => match runtime.eval_str(input.as_str()) {
+                        Ok(obj) => writeln!(serial, "\r{}", obj).unwrap(),
+                        Err(e) => writeln!(serial, "\rError: {:?}", e).unwrap(),
                     }
                 }
                 input.clear();

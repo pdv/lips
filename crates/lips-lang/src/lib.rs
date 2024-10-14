@@ -2,8 +2,6 @@
 
 use core::{fmt, str::Chars};
 
-use heapless::Vec;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pointer(u16);
 
@@ -99,8 +97,10 @@ impl<'a> Iterator for Cursor<'a> {
 
 #[derive(Debug)]
 pub struct Runtime {
-    workspace: Vec<Object, 1000>,
+    workspace: [Option<Object>; 1000],
+    marked: [bool; 1000],
     env: Pointer,
+    obj_count: u16,
 }
 
 #[derive(Debug)]
@@ -113,31 +113,67 @@ pub enum Error {
     TypeError,
     SyntaxError,
     ArgCount,
+    InvalidPointer,
 }
 
 impl Runtime {
     pub fn new() -> Self {
-        let mut workspace = Vec::new();
-        workspace.push(Object::Int(0)).unwrap();
+        let mut workspace = [None; 1000];
+        workspace[0] = Some(Object::Int(0));
         Runtime {
             workspace,
+            marked: [false; 1000],
             env: NIL,
+            obj_count: 999
         }
     }
 
     fn alloc(&mut self, obj: Object) -> Result<Pointer, Error> {
-        self.workspace.push(obj).or(Err(Error::OutOfMemory))?;
-        Ok(Pointer(self.workspace.len() as u16 - 1))
+        for i in 0..self.workspace.len() {
+            if self.workspace[i] == None {
+                self.workspace[i] = Some(obj);
+                return Ok(Pointer(i as u16));
+            }
+        }
+        Err(Error::OutOfMemory)
     }
 
     fn deref(&self, pointer: Pointer) -> Result<Object, Error> {
-        if pointer.0 == 0 {
+        if pointer == NIL {
             return Err(Error::NullPointer);
         }
         self.workspace
             .get(pointer.0 as usize)
-            .ok_or(Error::NullPointer)
+            .ok_or(Error::InvalidPointer)
             .copied()
+            .transpose()
+            .unwrap_or(Err(Error::InvalidPointer))
+    }
+
+    fn mark(&mut self, pointer: Pointer) -> Result<(), Error> {
+        if pointer == NIL {
+            return Ok(())
+        };
+        if !self.marked[pointer.0 as usize] {
+            self.marked[pointer.0 as usize] = true;
+            let Ok((car, cdr)) = self.split(pointer) else {
+                return Ok(())
+            };
+            self.mark(car)?;
+            self.mark(cdr)?;
+        }
+        Ok(())
+    }
+
+    pub fn gc(&mut self) -> Result<(), Error> {
+        self.marked.fill(false);
+        self.mark(self.env)?;
+        for idx in 1..self.workspace.len() {
+            if !self.marked[idx] {
+                self.workspace[idx] = None;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -361,7 +397,9 @@ impl core::fmt::Display for Object {
 impl core::fmt::Display for Runtime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (idx, obj) in self.workspace.iter().enumerate() {
-            writeln!(f, "\r{}: {}", idx, obj)?;
+            if let Some(obj) = obj {
+                writeln!(f, "\r{}: {}", idx, obj)?;
+            }
         }
         Ok(())
     }
