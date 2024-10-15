@@ -278,7 +278,7 @@ impl<E: EffectHandler> Runtime<E> {
             }
             Token::OpenDoubleQuote => {
                 let Some(Ok(Token::Symbol(string))) = cursor.next() else {
-                    return Err(Error::SyntaxError("expected symbol after quote"));
+                    return Err(Error::SyntaxError("expected string after double quote"));
                 };
                 let mut s = NIL;
                 for c in string.chars().rev() {
@@ -323,10 +323,6 @@ impl<E: EffectHandler> Runtime<E> {
 
     fn second(&self, pointer: Pointer) -> Result<Pointer, Error> {
         self.car(self.cdr(pointer)?)
-    }
-
-    fn cddr(&self, pointer: Pointer) -> Result<Pointer, Error> {
-        self.cdr(self.cdr(pointer)?)
     }
 
     fn third(&self, pointer: Pointer) -> Result<Pointer, Error> {

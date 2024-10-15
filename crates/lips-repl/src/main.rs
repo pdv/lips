@@ -1,8 +1,15 @@
+use std::borrow::Cow;
 use std::error::Error;
+
+use nu_ansi_term::{Color, Style};
+use reedline::{
+    Highlighter, Prompt, PromptEditMode, PromptHistorySearch, Reedline, Signal, StyledText,
+};
 
 use lips_lang::{EffectHandler, NIL, Pointer, Runtime};
 
 #[derive(Debug)]
+
 struct StdEffectHandler {}
 
 impl core::fmt::Write for StdEffectHandler {
@@ -14,16 +21,98 @@ impl core::fmt::Write for StdEffectHandler {
 
 impl EffectHandler for StdEffectHandler {}
 
+struct SyntaxHighlighter {}
+
+fn paren_color(depth: usize) -> Color {
+    match depth {
+        0 => Color::White,
+        1 => Color::Green,
+        2 => Color::LightBlue,
+        3 => Color::Red,
+        _ => Color::LightPurple,
+    }
+}
+
+fn paren_pairs(line: &str) -> Vec<(usize, usize, usize)> {
+    let mut lefts = Vec::new();
+    let mut pairs = Vec::new();
+    for (idx, c) in line.chars().enumerate() {
+        match c {
+            '(' => {
+                lefts.push(idx);
+            }
+            ')' => {
+                if let Some(left) = lefts.pop() {
+                    pairs.push((left, idx, lefts.len()));
+                }
+            }
+            _ => {}
+        }
+    }
+    pairs
+}
+
+impl Highlighter for SyntaxHighlighter {
+    fn highlight(&self, line: &str, cursor: usize) -> StyledText {
+        let pairs = paren_pairs(line);
+        let mut s = StyledText::new();
+        for (idx, c) in line.chars().enumerate() {
+            let mut style = Style::default();
+            if let Some((l, r, depth)) = pairs.iter().find(|(l, r, _)| *l == idx || *r == idx) {
+                style.foreground = Some(paren_color(*depth));
+                if (*l == cursor || *r == cursor - 1) && *l > 0 {
+                    style = style.underline();
+                }
+            } else if c == '(' || c == ')' {
+                style.background = Some(Color::Red)
+            }
+            s.push((style, c.to_string()))
+        }
+        s
+    }
+}
+
+struct MyPrompt {}
+
+impl Prompt for MyPrompt {
+    fn render_prompt_left(&self) -> Cow<str> {
+        Cow::from("> ".to_string())
+    }
+
+    fn render_prompt_right(&self) -> Cow<str> {
+        Cow::default()
+    }
+
+    fn render_prompt_indicator(&self, _prompt_mode: PromptEditMode) -> Cow<str> {
+        Cow::default()
+    }
+
+    fn render_prompt_multiline_indicator(&self) -> Cow<str> {
+        Cow::default()
+    }
+
+    fn render_prompt_history_search_indicator(
+        &self,
+        _history_search: PromptHistorySearch,
+    ) -> Cow<str> {
+        Cow::default()
+    }
+
+    fn get_prompt_color(&self) -> reedline::Color {
+        reedline::Color::Reset
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut rl = rustyline::DefaultEditor::new()?;
+    let mut rl = Reedline::create().with_highlighter(Box::new(SyntaxHighlighter {}));
+    let prompt = MyPrompt {};
     let handler = StdEffectHandler {};
     let mut runtime = Runtime::new(handler);
     loop {
-        let readline = rl.readline(">> ")?;
-        let (cmd, arg) = readline
-            .as_str()
-            .split_once(" ")
-            .unwrap_or((readline.as_str(), ""));
+        let Signal::Success(readline) = rl.read_line(&prompt)? else {
+            panic!("readline failure")
+        };
+        let (cmd, arg) = readline.split_once(" ").unwrap_or((&readline, ""));
         match cmd {
             "\\dump" => print!("{}", runtime),
             "\\gc" => {
