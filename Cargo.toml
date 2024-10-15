@@ -1,6 +1,6 @@
 [workspace]
 members = [
     "crates/lips-lang",
-    "crates/lips-app"
-]
+    "crates/lips-embedded"
+, "crates/lips-repl"]
 resolver = "2"

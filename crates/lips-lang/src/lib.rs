@@ -2,10 +2,12 @@
 
 use core::{fmt, str::Chars};
 
+const WORKSPACE_SIZE: usize = 1000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pointer(u16);
 
-const NIL: Pointer = Pointer(0);
+pub const NIL: Pointer = Pointer(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Symbol {
@@ -16,6 +18,7 @@ pub enum Symbol {
     Lambda,
     If,
     Lt,
+    Do,
     Identifier(u8),
 }
 
@@ -81,7 +84,7 @@ impl<'a> Iterator for Cursor<'a> {
             '0'..='9' => self
                 .eat_while(|c| c.is_numeric())
                 .parse::<i32>()
-                .map(|i| Token::Int(i))
+                .map(Token::Int)
                 .map_err(|_| Error::TypeError),
             ' ' => {
                 self.eat_one();
@@ -97,8 +100,8 @@ impl<'a> Iterator for Cursor<'a> {
 
 #[derive(Debug)]
 pub struct Runtime {
-    workspace: [Option<Object>; 1000],
-    marked: [bool; 1000],
+    workspace: [Option<Object>; WORKSPACE_SIZE],
+    marked: [bool; WORKSPACE_SIZE],
     env: Pointer,
     obj_count: u16,
 }
@@ -106,7 +109,7 @@ pub struct Runtime {
 #[derive(Debug)]
 pub enum Error {
     EndOfFile,
-    NotFound,
+    NotFound(Pointer),
     OutOfMemory,
     NullPointer,
     UnknownSymbol,
@@ -114,24 +117,26 @@ pub enum Error {
     SyntaxError,
     ArgCount,
     InvalidPointer,
+    UseAfterFree,
 }
 
 impl Runtime {
     pub fn new() -> Self {
-        let mut workspace = [None; 1000];
+        let mut workspace = [None; WORKSPACE_SIZE];
         workspace[0] = Some(Object::Int(0));
         Runtime {
             workspace,
-            marked: [false; 1000],
+            marked: [false; WORKSPACE_SIZE],
             env: NIL,
-            obj_count: 999
+            obj_count: 1,
         }
     }
 
     fn alloc(&mut self, obj: Object) -> Result<Pointer, Error> {
         for i in 0..self.workspace.len() {
-            if self.workspace[i] == None {
+            if self.workspace[i].is_none() {
                 self.workspace[i] = Some(obj);
+                self.obj_count += 1;
                 return Ok(Pointer(i as u16));
             }
         }
@@ -147,29 +152,29 @@ impl Runtime {
             .ok_or(Error::InvalidPointer)
             .copied()
             .transpose()
-            .unwrap_or(Err(Error::InvalidPointer))
+            .unwrap_or(Err(Error::UseAfterFree))
     }
 
     fn mark(&mut self, pointer: Pointer) -> Result<(), Error> {
-        if pointer == NIL {
-            return Ok(())
-        };
-        if !self.marked[pointer.0 as usize] {
-            self.marked[pointer.0 as usize] = true;
-            let Ok((car, cdr)) = self.split(pointer) else {
-                return Ok(())
-            };
-            self.mark(car)?;
-            self.mark(cdr)?;
+        if pointer == NIL || self.marked[pointer.0 as usize] {
+            return Ok(());
         }
+        self.marked[pointer.0 as usize] = true;
+        let Ok((car, cdr)) = self.split(pointer) else {
+            return Ok(());
+        };
+        self.mark(car)?;
+        self.mark(cdr)?;
         Ok(())
     }
 
-    pub fn gc(&mut self) -> Result<(), Error> {
+    pub fn gc(&mut self, env: Pointer) -> Result<(), Error> {
         self.marked.fill(false);
         self.mark(self.env)?;
+        self.mark(env)?;
         for idx in 1..self.workspace.len() {
-            if !self.marked[idx] {
+            if !self.marked[idx] && self.workspace[idx].is_some() {
+                self.obj_count -= 1;
                 self.workspace[idx] = None;
             }
         }
@@ -184,7 +189,7 @@ impl Runtime {
             return Ok(NIL);
         }
         let tail = self.read_rest(cursor)?;
-        self.alloc(Object::Cons(head, tail))
+        self.cons(head, tail)
     }
 
     fn read(&mut self, cursor: &mut Cursor) -> Result<Pointer, Error> {
@@ -194,8 +199,8 @@ impl Runtime {
         match token {
             Token::OpenParen => self.read_rest(cursor),
             Token::CloseParen => Ok(NIL),
-            Token::Int(i) => self.alloc(Object::Int(i)),
-            Token::Symbol(s) => self.alloc(Object::Symbol(match s {
+            Token::Int(i) => self.int(i),
+            Token::Symbol(s) => self.symbol(match s {
                 "nil" => Symbol::Nil,
                 "def" => Symbol::Def,
                 "+" => Symbol::Add,
@@ -203,8 +208,9 @@ impl Runtime {
                 "fn" => Symbol::Lambda,
                 "if" => Symbol::If,
                 "<" => Symbol::Lt,
+                "do" => Symbol::Do,
                 _ => Symbol::Identifier(s.as_bytes()[0]),
-            })),
+            }),
         }
     }
 }
@@ -224,7 +230,7 @@ impl Runtime {
 
     fn split(&self, pointer: Pointer) -> Result<(Pointer, Pointer), Error> {
         let Object::Cons(car, cdr) = self.deref(pointer)? else {
-            return Err(Error::TypeError)
+            return Err(Error::TypeError);
         };
         Ok((car, cdr))
     }
@@ -257,14 +263,14 @@ impl Runtime {
 
     fn deref_symbol(&self, pointer: Pointer) -> Result<Symbol, Error> {
         let Object::Symbol(symbol) = self.deref(pointer)? else {
-            return Err(Error::TypeError)
+            return Err(Error::TypeError);
         };
         Ok(symbol)
     }
 
     fn deref_int(&self, pointer: Pointer) -> Result<i32, Error> {
         let Object::Int(n) = self.deref(pointer)? else {
-            return Err(Error::TypeError)
+            return Err(Error::TypeError);
         };
         Ok(n)
     }
@@ -326,6 +332,15 @@ impl Runtime {
                     Ok(NIL)
                 }
             }
+            Symbol::Do => {
+                let times = self.eval(self.first(args)?, env)?;
+                let body = self.second(args)?;
+                let mut res = NIL;
+                for _ in 0..self.deref_int(times)? {
+                    res = self.apply(NIL, NIL, body, env)?;
+                }
+                Ok(res)
+            }
             Symbol::Identifier(_) => Err(Error::TypeError),
         }
     }
@@ -352,6 +367,9 @@ impl Runtime {
     }
 
     fn eval(&mut self, form: Pointer, env: Pointer) -> Result<Pointer, Error> {
+        if self.obj_count > self.workspace.len() as u16 - 100 {
+            self.gc(env)?;
+        }
         match self.deref(form)? {
             Object::Int(_) => Ok(form),
             Object::Symbol(symbol) => match symbol {
@@ -360,7 +378,7 @@ impl Runtime {
                     .lookup(env, id)
                     .transpose()
                     .or(self.lookup(self.env, id).transpose())
-                    .unwrap_or(Err(Error::NotFound)),
+                    .unwrap_or(Err(Error::NotFound(form))),
                 _ => Ok(form),
             },
             Object::Cons(func, args) => {
@@ -517,5 +535,24 @@ mod tests {
             .unwrap();
         let res = runtime.eval_str("(fib 10)").unwrap();
         assert_eq!(res, Object::Int(55));
+    }
+
+    #[test]
+    fn test_tco() {
+        let mut runtime = Runtime::new();
+        let _ = runtime
+            .eval_str("(def f (fn (n) (if (< n 3) 1 (f (- n 1)))))")
+            .unwrap();
+        let res = runtime.eval_str("(f 100)").unwrap();
+        assert_eq!(res, Object::Int(1));
+    }
+
+    #[test]
+    fn test_do() {
+        let mut runtime = Runtime::new();
+        let _ = runtime.eval_str("(def x 0)").unwrap();
+        let _ = runtime.eval_str("(do 5 (def x (+ x 1)))").unwrap();
+        let res = runtime.eval_str("x").unwrap();
+        assert_eq!(res, Object::Int(5));
     }
 }

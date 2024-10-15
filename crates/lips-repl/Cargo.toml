@@ -1,0 +1,8 @@
+[package]
+name = "lips-repl"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lips-lang = { path = "../lips-lang" }
+rustyline = "14.0.0"

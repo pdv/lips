@@ -1,18 +1,18 @@
 #![no_main]
 #![no_std]
 
-use heapless::String;
-use lips_lang::{self, Runtime};
-
 use core::fmt::Write;
-use panic_rtt_target as _;
-use rtt_target::{rprintln, rtt_init_print};
 
+use heapless::String;
 use microbit::{
-    hal::prelude::*,
     hal::uarte,
     hal::uarte::{Baudrate, Parity},
 };
+#[allow(unused_imports)]
+use panic_rtt_target as _;
+use rtt_target::{rprintln, rtt_init_print};
+
+use lips_lang::{self, NIL, Runtime};
 
 #[cortex_m_rt::entry]
 fn main() -> ! {
@@ -45,13 +45,13 @@ fn main() -> ! {
                         writeln!(serial, "\r{}", runtime).unwrap();
                     }
                     "\\gc" => {
-                        runtime.gc().unwrap();
+                        runtime.gc(NIL).unwrap();
                         writeln!(serial, "").unwrap();
                     }
                     _ => match runtime.eval_str(input.as_str()) {
                         Ok(obj) => writeln!(serial, "\r{}", obj).unwrap(),
                         Err(e) => writeln!(serial, "\rError: {:?}", e).unwrap(),
-                    }
+                    },
                 }
                 input.clear();
                 write!(serial, "\r> ").unwrap();
