@@ -1,17 +1,19 @@
 #![no_std]
 
-use core::{fmt, str::Chars};
+use core::{
+    fmt::{self, write, Write},
+    str::Chars,
+};
 
 const WORKSPACE_SIZE: usize = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pointer(u16);
 
-pub const NIL: Pointer = Pointer(0);
+pub const NIL: Pointer = Pointer(u16::MAX);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Symbol {
-    Nil,
+pub enum Builtin {
     Def,
     Add,
     Sub,
@@ -19,21 +21,66 @@ pub enum Symbol {
     If,
     Lt,
     Do,
+}
+
+impl TryFrom<&str> for Builtin {
+    type Error = Error;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let function = match value {
+            "def" => Self::Def,
+            "+" => Builtin::Add,
+            "-" => Builtin::Sub,
+            "fn" => Builtin::Lambda,
+            "if" => Builtin::If,
+            "<" => Builtin::Lt,
+            "do" => Builtin::Do,
+            _ => return Err(Error::UnknownSymbol),
+        };
+        Ok(function)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Atom {
+    Nil,
     Identifier(u8),
+    Int(i32),
+    Builtin(Builtin),
+}
+
+impl TryFrom<&str> for Atom {
+    type Error = Error;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        if let Ok(n) = value.parse::<i32>() {
+            Ok(Self::Int(n))
+        } else if let Ok(builtin) = Builtin::try_from(value) {
+            Ok(Self::Builtin(builtin))
+        } else if value == "nil" {
+            Ok(Self::Nil)
+        } else if let Some(id) = value.bytes().next() {
+            Ok(Self::Identifier(id))
+        } else {
+            Err(Error::SyntaxError)
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Object {
-    Int(i32),
-    Symbol(Symbol),
+    Atom(Atom),
     Cons(Pointer, Pointer),
+}
+
+impl From<i32> for Object {
+    fn from(value: i32) -> Self {
+        Self::Atom(Atom::Int(value))
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum Token<'a> {
     OpenParen,
     CloseParen,
-    Int(i32),
     Symbol(&'a str),
 }
 
@@ -81,11 +128,6 @@ impl<'a> Iterator for Cursor<'a> {
                 self.eat_one();
                 Ok(Token::CloseParen)
             }
-            '0'..='9' => self
-                .eat_while(|c| c.is_numeric())
-                .parse::<i32>()
-                .map(Token::Int)
-                .map_err(|_| Error::TypeError),
             ' ' => {
                 self.eat_one();
                 return self.next();
@@ -122,10 +164,8 @@ pub enum Error {
 
 impl Runtime {
     pub fn new() -> Self {
-        let mut workspace = [None; WORKSPACE_SIZE];
-        workspace[0] = Some(Object::Int(0));
         Runtime {
-            workspace,
+            workspace: [None; WORKSPACE_SIZE],
             marked: [false; WORKSPACE_SIZE],
             env: NIL,
             obj_count: 1,
@@ -155,30 +195,28 @@ impl Runtime {
             .unwrap_or(Err(Error::UseAfterFree))
     }
 
-    fn mark(&mut self, pointer: Pointer) -> Result<(), Error> {
+    fn mark(&mut self, pointer: Pointer) {
         if pointer == NIL || self.marked[pointer.0 as usize] {
-            return Ok(());
+            return;
         }
         self.marked[pointer.0 as usize] = true;
         let Ok((car, cdr)) = self.split(pointer) else {
-            return Ok(());
+            return;
         };
-        self.mark(car)?;
-        self.mark(cdr)?;
-        Ok(())
+        self.mark(car);
+        self.mark(cdr);
     }
 
-    pub fn gc(&mut self, env: Pointer) -> Result<(), Error> {
+    pub fn gc(&mut self, env: Pointer) {
         self.marked.fill(false);
-        self.mark(self.env)?;
-        self.mark(env)?;
-        for idx in 1..self.workspace.len() {
+        self.mark(self.env);
+        self.mark(env);
+        for idx in 0..self.workspace.len() {
             if !self.marked[idx] && self.workspace[idx].is_some() {
                 self.obj_count -= 1;
                 self.workspace[idx] = None;
             }
         }
-        Ok(())
     }
 }
 
@@ -199,29 +237,14 @@ impl Runtime {
         match token {
             Token::OpenParen => self.read_rest(cursor),
             Token::CloseParen => Ok(NIL),
-            Token::Int(i) => self.int(i),
-            Token::Symbol(s) => self.symbol(match s {
-                "nil" => Symbol::Nil,
-                "def" => Symbol::Def,
-                "+" => Symbol::Add,
-                "-" => Symbol::Sub,
-                "fn" => Symbol::Lambda,
-                "if" => Symbol::If,
-                "<" => Symbol::Lt,
-                "do" => Symbol::Do,
-                _ => Symbol::Identifier(s.as_bytes()[0]),
-            }),
+            Token::Symbol(s) => self.alloc(Object::Atom(s.try_into()?)),
         }
     }
 }
 
 impl Runtime {
     fn int(&mut self, n: i32) -> Result<Pointer, Error> {
-        self.alloc(Object::Int(n))
-    }
-
-    fn symbol(&mut self, symbol: Symbol) -> Result<Pointer, Error> {
-        self.alloc(Object::Symbol(symbol))
+        self.alloc(Object::Atom(Atom::Int(n)))
     }
 
     fn cons(&mut self, car: Pointer, cdr: Pointer) -> Result<Pointer, Error> {
@@ -261,15 +284,8 @@ impl Runtime {
         self.car(self.cdr(self.cdr(pointer)?)?)
     }
 
-    fn deref_symbol(&self, pointer: Pointer) -> Result<Symbol, Error> {
-        let Object::Symbol(symbol) = self.deref(pointer)? else {
-            return Err(Error::TypeError);
-        };
-        Ok(symbol)
-    }
-
     fn deref_int(&self, pointer: Pointer) -> Result<i32, Error> {
-        let Object::Int(n) = self.deref(pointer)? else {
+        let Object::Atom(Atom::Int(n)) = self.deref(pointer)? else {
             return Err(Error::TypeError);
         };
         Ok(n)
@@ -283,39 +299,39 @@ impl Runtime {
         }
         let (entry, rest) = self.split(env)?;
         let (key, value) = self.split(entry)?;
-        if self.deref_symbol(key)? == Symbol::Identifier(id) {
+        if self.deref(key)? == Object::Atom(Atom::Identifier(id)) {
             Ok(Some(value))
         } else {
             self.lookup(rest, id)
         }
     }
 
-    fn builtin(&mut self, symbol: Symbol, args: Pointer, env: Pointer) -> Result<Pointer, Error> {
-        match symbol {
-            Symbol::Nil => Ok(NIL),
-            Symbol::Def => {
+    fn builtin(&mut self, builtin: Builtin, args: Pointer, env: Pointer) -> Result<Pointer, Error> {
+        use Builtin::*;
+        match builtin {
+            Def => {
                 let key = self.first(args)?;
                 let value = self.eval(self.second(args)?, env)?;
                 let entry = self.cons(key, value)?;
                 self.env = self.cons(entry, self.env)?;
                 Ok(key)
             }
-            Symbol::Add => {
+            Add => {
                 let a = self.eval(self.first(args)?, env)?;
                 let b = self.eval(self.second(args)?, env)?;
                 self.int(self.deref_int(a)? + self.deref_int(b)?)
             }
-            Symbol::Sub => {
+            Sub => {
                 let a = self.eval(self.first(args)?, env)?;
                 let b = self.eval(self.second(args)?, env)?;
                 self.int(self.deref_int(a)? - self.deref_int(b)?)
             }
-            Symbol::Lambda => {
+            Lambda => {
                 let params = self.first(args)?;
                 let body = self.second(args)?;
                 self.cons(params, body)
             }
-            Symbol::If => {
+            If => {
                 let cond = self.eval(self.first(args)?, env)?;
                 if cond != NIL {
                     self.eval(self.second(args)?, env)
@@ -323,7 +339,7 @@ impl Runtime {
                     self.eval(self.third(args)?, env)
                 }
             }
-            Symbol::Lt => {
+            Lt => {
                 let a = self.eval(self.first(args)?, env)?;
                 let b = self.eval(self.second(args)?, env)?;
                 if self.deref_int(a)? < self.deref_int(b)? {
@@ -332,7 +348,7 @@ impl Runtime {
                     Ok(NIL)
                 }
             }
-            Symbol::Do => {
+            Do => {
                 let times = self.eval(self.first(args)?, env)?;
                 let body = self.second(args)?;
                 let mut res = NIL;
@@ -341,7 +357,6 @@ impl Runtime {
                 }
                 Ok(res)
             }
-            Symbol::Identifier(_) => Err(Error::TypeError),
         }
     }
 
@@ -368,45 +383,45 @@ impl Runtime {
 
     fn eval(&mut self, form: Pointer, env: Pointer) -> Result<Pointer, Error> {
         if self.obj_count > self.workspace.len() as u16 - 100 {
-            self.gc(env)?;
+            self.gc(env);
         }
         match self.deref(form)? {
-            Object::Int(_) => Ok(form),
-            Object::Symbol(symbol) => match symbol {
-                Symbol::Nil => Ok(NIL),
-                Symbol::Identifier(id) => self
+            Object::Atom(atom) => match atom {
+                Atom::Nil => Ok(NIL),
+                Atom::Int(_) => Ok(form),
+                Atom::Builtin(_) => Ok(form),
+                Atom::Identifier(id) => self
                     .lookup(env, id)
                     .transpose()
                     .or(self.lookup(self.env, id).transpose())
                     .unwrap_or(Err(Error::NotFound(form))),
-                _ => Ok(form),
             },
             Object::Cons(func, args) => {
                 let func = self.eval(func, env)?;
                 match self.deref(func)? {
-                    Object::Symbol(symbol) => self.builtin(symbol, args, env),
+                    Object::Atom(Atom::Builtin(builtin)) => self.builtin(builtin, args, env),
                     Object::Cons(params, body) => self.apply(params, args, body, env),
                     _ => Err(Error::TypeError),
                 }
             }
         }
     }
+
+    pub fn pretty_print(&self, writer: impl Write, form: Pointer) {}
 }
 
 impl Runtime {
-    pub fn eval_str(&mut self, form: &str) -> Result<Object, Error> {
+    pub fn eval_str(&mut self, form: &str) -> Result<Pointer, Error> {
         let mut cursor = Cursor::new(form);
         let form = self.read(&mut cursor)?;
-        let res = self.eval(form, NIL)?;
-        self.deref(res)
+        self.eval(form, NIL)
     }
 }
 
 impl core::fmt::Display for Object {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Object::Int(i) => write!(f, "{}", i),
-            Object::Symbol(s) => write!(f, "{:?}", s),
+            Object::Atom(a) => write!(f, "{:?}", a),
             Object::Cons(car, cdr) => write!(f, "({} {})", car.0, cdr.0),
         }
     }
@@ -431,14 +446,16 @@ mod tests {
     #[test]
     fn test_alloc() {
         let mut runtime = Runtime::new();
-        let symbol = runtime.alloc(Object::Symbol(Symbol::Add)).unwrap();
-        let a = runtime.alloc(Object::Int(1)).unwrap();
-        let b = runtime.alloc(Object::Int(2)).unwrap();
-        let end = runtime.alloc(Object::Cons(b, Pointer(100))).unwrap();
-        let next = runtime.alloc(Object::Cons(a, end)).unwrap();
-        let head = runtime.alloc(Object::Cons(symbol, next)).unwrap();
+        let symbol = runtime
+            .alloc(Object::Atom(Atom::Builtin(Builtin::Add)))
+            .unwrap();
+        let a = runtime.int(1).unwrap();
+        let b = runtime.int(2).unwrap();
+        let end = runtime.cons(b, Pointer(100)).unwrap();
+        let next = runtime.cons(a, end).unwrap();
+        let head = runtime.cons(symbol, next).unwrap();
         let res = runtime.eval(head, NIL).unwrap();
-        assert_eq!(runtime.deref(res).unwrap(), Object::Int(3));
+        assert_eq!(runtime.deref(res).unwrap(), Object::Atom(Atom::Int(3)));
     }
 
     #[test]
@@ -447,8 +464,8 @@ mod tests {
         let expected = [
             Token::OpenParen,
             Token::Symbol("+"),
-            Token::Int(1),
-            Token::Int(2),
+            Token::Symbol("1"),
+            Token::Symbol("2"),
             Token::CloseParen,
         ];
         for (idx, token) in cursor.enumerate() {
@@ -462,11 +479,11 @@ mod tests {
         let expected = [
             Token::OpenParen,
             Token::Symbol("+"),
-            Token::Int(1),
+            Token::Symbol("1"),
             Token::OpenParen,
             Token::Symbol("+"),
-            Token::Int(2),
-            Token::Int(3),
+            Token::Symbol("2"),
+            Token::Symbol("3"),
             Token::CloseParen,
             Token::CloseParen,
         ];
@@ -475,48 +492,37 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_read() {
+    fn assert_int(form: &str, expected: i32) {
         let mut runtime = Runtime::new();
-        let res = runtime.eval_str("(+ 1 2)").unwrap();
-        assert_eq!(res, Object::Int(3));
+        let res = runtime.eval_str(form).unwrap();
+        let res = runtime.deref(res).unwrap();
+        assert_eq!(res, Object::Atom(Atom::Int(expected)));
     }
 
     #[test]
     fn test_nested() {
-        let mut runtime = Runtime::new();
-        let res = runtime.eval_str("(+ (+ 1 2) (+ 3 4))").unwrap();
-        assert_eq!(res, Object::Int(10));
+        assert_int("(+ (+ 1 2) (+ 3 4))", 10);
     }
 
     #[test]
     fn test_lambda() {
-        let mut runtime = Runtime::new();
-        let res = runtime.eval_str("((fn (x) x) 42)").unwrap();
-        assert_eq!(res, Object::Int(42));
+        assert_int("((fn (x) x) 42)", 42);
     }
 
     #[test]
     fn test_fn() {
-        let mut runtime = Runtime::new();
-        let res = runtime.eval_str("((fn (x) (x 1)) (fn (x) x))").unwrap();
-        assert_eq!(res, Object::Int(1));
+        assert_int("((fn (x) (x 1)) (fn (x) x))", 1);
     }
 
     #[test]
     fn test_if() {
-        let mut runtime = Runtime::new();
-        let res = runtime.eval_str("(if nil 1 2)").unwrap();
-        assert_eq!(res, Object::Int(2));
-        let res = runtime.eval_str("(if 99 1 2)").unwrap();
-        assert_eq!(res, Object::Int(1));
+        assert_int("(if nil 1 2)", 2);
+        assert_int("(if 99 1 2)", 1);
     }
 
     #[test]
     fn test_math() {
-        let mut runtime = Runtime::new();
-        let res = runtime.eval_str("(if (< 2 (- 8 3)) 1 4)").unwrap();
-        assert_eq!(res, Object::Int(1));
+        assert_int("(if (< 2 (- 8 3)) 1 4)", 1);
     }
 
     #[test]
@@ -524,7 +530,8 @@ mod tests {
         let mut runtime = Runtime::new();
         let _ = runtime.eval_str("(def x 2)").unwrap();
         let res = runtime.eval_str("(+ x 1)").unwrap();
-        assert_eq!(res, Object::Int(3));
+        let res = runtime.deref(res).unwrap();
+        assert_eq!(res, 3.into());
     }
 
     #[test]
@@ -534,7 +541,8 @@ mod tests {
             .eval_str("(def fib (fn (n) (if (< n 3) 1 (+ (fib (- n 1)) (fib (- n 2))))))")
             .unwrap();
         let res = runtime.eval_str("(fib 10)").unwrap();
-        assert_eq!(res, Object::Int(55));
+        let res = runtime.deref(res).unwrap();
+        assert_eq!(res, 55.into());
     }
 
     #[test]
@@ -544,7 +552,8 @@ mod tests {
             .eval_str("(def f (fn (n) (if (< n 3) 1 (f (- n 1)))))")
             .unwrap();
         let res = runtime.eval_str("(f 100)").unwrap();
-        assert_eq!(res, Object::Int(1));
+        let res = runtime.deref(res).unwrap();
+        assert_eq!(res, 1.into());
     }
 
     #[test]
@@ -553,6 +562,7 @@ mod tests {
         let _ = runtime.eval_str("(def x 0)").unwrap();
         let _ = runtime.eval_str("(do 5 (def x (+ x 1)))").unwrap();
         let res = runtime.eval_str("x").unwrap();
-        assert_eq!(res, Object::Int(5));
+        let res = runtime.deref(res).unwrap();
+        assert_eq!(res, 5.into());
     }
 }

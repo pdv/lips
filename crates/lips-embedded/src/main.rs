@@ -12,7 +12,7 @@ use microbit::{
 use panic_rtt_target as _;
 use rtt_target::{rprintln, rtt_init_print};
 
-use lips_lang::{self, NIL, Runtime};
+use lips_lang::{self, Runtime, NIL};
 
 #[cortex_m_rt::entry]
 fn main() -> ! {
@@ -45,7 +45,7 @@ fn main() -> ! {
                         writeln!(serial, "\r{}", runtime).unwrap();
                     }
                     "\\gc" => {
-                        runtime.gc(NIL).unwrap();
+                        runtime.gc(NIL);
                         writeln!(serial, "").unwrap();
                     }
                     _ => match runtime.eval_str(input.as_str()) {

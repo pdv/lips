@@ -1,6 +1,6 @@
-use std::error::Error;
+use std::{error::Error, io::stdout};
 
-use lips_lang::{NIL, Runtime};
+use lips_lang::{Runtime, NIL};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut rl = rustyline::DefaultEditor::new()?;
@@ -8,10 +8,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     loop {
         let readline = rl.readline(">> ")?;
         match readline.as_str() {
-            "\\dump" => println!("{}", runtime),
+            "\\dump" => print!("{}", runtime),
             "\\gc" => {
-                runtime.gc(NIL).unwrap();
-                println!()
+                runtime.gc(NIL);
             }
             _ => match runtime.eval_str(&readline) {
                 Ok(obj) => println!("{}", obj),
