@@ -21,6 +21,7 @@ pub enum Builtin {
     If,
     Lt,
     Do,
+    Map,
 }
 
 impl TryFrom<&str> for Builtin {
@@ -28,12 +29,13 @@ impl TryFrom<&str> for Builtin {
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let function = match value {
             "def" => Self::Def,
-            "+" => Builtin::Add,
-            "-" => Builtin::Sub,
-            "fn" => Builtin::Lambda,
-            "if" => Builtin::If,
-            "<" => Builtin::Lt,
-            "do" => Builtin::Do,
+            "+" => Self::Add,
+            "-" => Self::Sub,
+            "fn" => Self::Lambda,
+            "if" => Self::If,
+            "<" => Self::Lt,
+            "do" => Self::Do,
+            "map" => Self::Map,
             _ => return Err(Error::UnknownSymbol),
         };
         Ok(function)
@@ -42,7 +44,6 @@ impl TryFrom<&str> for Builtin {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Atom {
-    Nil,
     Identifier(u8),
     Int(i32),
     Builtin(Builtin),
@@ -55,8 +56,6 @@ impl TryFrom<&str> for Atom {
             Ok(Self::Int(n))
         } else if let Ok(builtin) = Builtin::try_from(value) {
             Ok(Self::Builtin(builtin))
-        } else if value == "nil" {
-            Ok(Self::Nil)
         } else if let Some(id) = value.bytes().next() {
             Ok(Self::Identifier(id))
         } else {
@@ -81,6 +80,7 @@ impl From<i32> for Object {
 enum Token<'a> {
     OpenParen,
     CloseParen,
+    Quote,
     Symbol(&'a str),
 }
 
@@ -127,6 +127,10 @@ impl<'a> Iterator for Cursor<'a> {
             ')' => {
                 self.eat_one();
                 Ok(Token::CloseParen)
+            }
+            '\'' => {
+                self.eat_one();
+                Ok(Token::Quote)
             }
             ' ' => {
                 self.eat_one();
@@ -237,6 +241,10 @@ impl Runtime {
         match token {
             Token::OpenParen => self.read_rest(cursor),
             Token::CloseParen => Ok(NIL),
+            Token::Quote => {
+                let quoted = self.read(cursor)?;
+                self.cons(NIL, quoted)
+            }
             Token::Symbol(s) => self.alloc(Object::Atom(s.try_into()?)),
         }
     }
@@ -357,7 +365,30 @@ impl Runtime {
                 }
                 Ok(res)
             }
+            Map => {
+                let function = self.eval(self.first(args)?, env)?;
+                let (params, body) = self.split(function)?;
+                let list = self.eval(self.second(args)?, env)?;
+                self.map(params, body, list, env)
+            }
         }
+    }
+
+    fn map(
+        &mut self,
+        params: Pointer,
+        body: Pointer,
+        list: Pointer,
+        env: Pointer,
+    ) -> Result<Pointer, Error> {
+        if list == NIL {
+            return Ok(NIL);
+        }
+        let (arg, rest) = self.split(list)?;
+        let args = self.cons(arg, NIL)?;
+        let res = self.apply(params, args, body, env)?;
+        let tail = self.map(params, body, rest, env)?;
+        self.cons(res, tail)
     }
 
     fn apply(
@@ -387,16 +418,16 @@ impl Runtime {
         }
         match self.deref(form)? {
             Object::Atom(atom) => match atom {
-                Atom::Nil => Ok(NIL),
-                Atom::Int(_) => Ok(form),
-                Atom::Builtin(_) => Ok(form),
                 Atom::Identifier(id) => self
-                    .lookup(env, id)
-                    .transpose()
-                    .or(self.lookup(self.env, id).transpose())
-                    .unwrap_or(Err(Error::NotFound(form))),
+                    .lookup(env, id)?
+                    .or(self.lookup(self.env, id)?)
+                    .ok_or(Error::NotFound(form)),
+                _ => Ok(form),
             },
             Object::Cons(func, args) => {
+                if func == NIL {
+                    return Ok(args);
+                }
                 let func = self.eval(func, env)?;
                 match self.deref(func)? {
                     Object::Atom(Atom::Builtin(builtin)) => self.builtin(builtin, args, env),
@@ -407,7 +438,26 @@ impl Runtime {
         }
     }
 
-    pub fn pretty_print(&self, writer: impl Write, form: Pointer) {}
+    pub fn pretty_print(&self, writer: &mut impl Write, form: Pointer) -> Result<(), fmt::Error> {
+        if form == NIL {
+            return write!(writer, "nil");
+        }
+        match self.deref(form).unwrap() {
+            Object::Atom(a) => write!(writer, "{}", a),
+            Object::Cons(car, cdr) => {
+                write!(writer, "(")?;
+                self.pretty_print(writer, car)?;
+                let mut head = cdr;
+                while head != NIL {
+                    write!(writer, " ")?;
+                    let (car, cdr) = self.split(head).unwrap();
+                    self.pretty_print(writer, car)?;
+                    head = cdr;
+                }
+                write!(writer, ")")
+            }
+        }
+    }
 }
 
 impl Runtime {
@@ -418,11 +468,31 @@ impl Runtime {
     }
 }
 
+impl core::fmt::Display for Atom {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Atom::Builtin(b) => write!(f, "{:?}", b),
+            Atom::Identifier(x) => write!(f, "id {}", x),
+            Atom::Int(n) => write!(f, "{}", n),
+        }
+    }
+}
+
+impl core::fmt::Display for Pointer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self == &NIL {
+            write!(f, "nil")
+        } else {
+            write!(f, "{}", self.0)
+        }
+    }
+}
+
 impl core::fmt::Display for Object {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Object::Atom(a) => write!(f, "{:?}", a),
-            Object::Cons(car, cdr) => write!(f, "({} {})", car.0, cdr.0),
+            Object::Atom(a) => write!(f, "{}", a),
+            Object::Cons(car, cdr) => write!(f, "({} {})", car, cdr),
         }
     }
 }
@@ -516,7 +586,7 @@ mod tests {
 
     #[test]
     fn test_if() {
-        assert_int("(if nil 1 2)", 2);
+        assert_int("(if (< 99 0) 1 2)", 2);
         assert_int("(if 99 1 2)", 1);
     }
 

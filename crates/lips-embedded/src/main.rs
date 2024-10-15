@@ -49,7 +49,7 @@ fn main() -> ! {
                         writeln!(serial, "").unwrap();
                     }
                     _ => match runtime.eval_str(input.as_str()) {
-                        Ok(obj) => writeln!(serial, "\r{}", obj).unwrap(),
+                        Ok(obj) => runtime.pretty_print(&mut serial, obj).unwrap(),
                         Err(e) => writeln!(serial, "\rError: {:?}", e).unwrap(),
                     },
                 }

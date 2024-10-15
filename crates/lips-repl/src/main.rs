@@ -13,7 +13,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 runtime.gc(NIL);
             }
             _ => match runtime.eval_str(&readline) {
-                Ok(obj) => println!("{}", obj),
+                Ok(obj) => {
+                    let mut s = String::new();
+                    runtime.pretty_print(&mut s, obj).unwrap();
+                    println!("{}", s);
+                }
                 Err(e) => println!("Error: {:?}", e),
             },
         }
