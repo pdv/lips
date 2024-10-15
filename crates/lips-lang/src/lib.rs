@@ -1,14 +1,14 @@
-#![no_std]
+// #![no_std]
 
 use core::{
-    fmt::{self, write, Write},
+    fmt::{self, Write},
     str::Chars,
 };
 
 const WORKSPACE_SIZE: usize = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Pointer(u16);
+pub struct Pointer(pub u16);
 
 pub const NIL: Pointer = Pointer(u16::MAX);
 
@@ -21,6 +21,7 @@ pub enum Builtin {
     If,
     Lt,
     Do,
+    Let,
     Map,
 }
 
@@ -35,6 +36,7 @@ impl TryFrom<&str> for Builtin {
             "if" => Self::If,
             "<" => Self::Lt,
             "do" => Self::Do,
+            "let" => Self::Let,
             "map" => Self::Map,
             _ => return Err(Error::UnknownSymbol),
         };
@@ -159,7 +161,7 @@ pub enum Error {
     OutOfMemory,
     NullPointer,
     UnknownSymbol,
-    TypeError,
+    TypeError(&'static str),
     SyntaxError,
     ArgCount,
     InvalidPointer,
@@ -261,7 +263,7 @@ impl Runtime {
 
     fn split(&self, pointer: Pointer) -> Result<(Pointer, Pointer), Error> {
         let Object::Cons(car, cdr) = self.deref(pointer)? else {
-            return Err(Error::TypeError);
+            return Err(Error::TypeError("trying to split atom"));
         };
         Ok((car, cdr))
     }
@@ -294,7 +296,7 @@ impl Runtime {
 
     fn deref_int(&self, pointer: Pointer) -> Result<i32, Error> {
         let Object::Atom(Atom::Int(n)) = self.deref(pointer)? else {
-            return Err(Error::TypeError);
+            return Err(Error::TypeError("expected int"));
         };
         Ok(n)
     }
@@ -371,6 +373,21 @@ impl Runtime {
                 let list = self.eval(self.second(args)?, env)?;
                 self.map(params, body, list, env)
             }
+            Let => {
+                let mut bindings = self.first(args)?;
+                let mut env = env;
+                while bindings != NIL {
+                    let (binding, rest) = self.split(bindings)?;
+                    let key = self.first(binding)?;
+                    let value = self.second(binding)?;
+                    let evaled_value = self.eval(value, env)?;
+                    let evaled_binding = self.cons(key, evaled_value)?;
+                    env = self.cons(evaled_binding, env)?;
+                    bindings = rest;
+                }
+                let body = self.second(args)?;
+                self.eval(body, env)
+            }
         }
     }
 
@@ -413,6 +430,11 @@ impl Runtime {
     }
 
     fn eval(&mut self, form: Pointer, env: Pointer) -> Result<Pointer, Error> {
+        let mut s = String::new();
+        self.pretty_print(&mut s, form)
+            .map_err(|_| Error::InvalidPointer)?;
+        println!("evaling {}", s);
+
         if self.obj_count > self.workspace.len() as u16 - 100 {
             self.gc(env);
         }
@@ -432,7 +454,7 @@ impl Runtime {
                 match self.deref(func)? {
                     Object::Atom(Atom::Builtin(builtin)) => self.builtin(builtin, args, env),
                     Object::Cons(params, body) => self.apply(params, args, body, env),
-                    _ => Err(Error::TypeError),
+                    _ => Err(Error::TypeError("eval")),
                 }
             }
         }
@@ -472,7 +494,7 @@ impl core::fmt::Display for Atom {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Atom::Builtin(b) => write!(f, "{:?}", b),
-            Atom::Identifier(x) => write!(f, "id {}", x),
+            Atom::Identifier(x) => write!(f, "{}", *x as char),
             Atom::Int(n) => write!(f, "{}", n),
         }
     }
