@@ -695,7 +695,7 @@ mod tests {
     }
 
     impl Write for TestEffectHandler {
-        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        fn write_str(&mut self, s: &str) -> fmt::Result {
             self.printed.push(s.to_string());
             Ok(())
         }
