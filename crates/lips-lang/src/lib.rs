@@ -25,6 +25,10 @@ pub enum Builtin {
     Let,
     Map,
     Print,
+    Eq,
+    And,
+    Or,
+    Not,
 }
 
 impl TryFrom<&str> for Builtin {
@@ -41,6 +45,10 @@ impl TryFrom<&str> for Builtin {
             "let" => Self::Let,
             "map" => Self::Map,
             "print" => Self::Print,
+            "=" => Self::Eq,
+            "and" => Self::And,
+            "or" => Self::Or,
+            "not" => Self::Not,
             _ => return Err(Error::UnknownSymbol),
         };
         Ok(function)
@@ -161,7 +169,7 @@ impl<'a> Iterator for Cursor<'a> {
                     Ok(Token::Symbol(self.eat_while(|c| c != '"')))
                 } else {
                     Ok(Token::Symbol(self.eat_while(|c| {
-                        c.is_alphanumeric() || c == '+' || c == '-' || c == '<'
+                        !c.is_whitespace() && c != ')' && c != '(' && c != '"'
                     })))
                 }
             }
@@ -425,6 +433,37 @@ impl<E: EffectHandler> Runtime<E> {
                 let res = self.eval(self.first(args)?, env)?;
                 write!(self.handler, "{}", self.deref(res)?).map_err(|_| Error::Handler)?;
                 Ok(res)
+            }
+            Eq => {
+                let a = self.eval(self.first(args)?, env)?;
+                let b = self.eval(self.second(args)?, env)?;
+                if self.deref(a)? == self.deref(b)? {
+                    self.int(1) // TODO: true?
+                } else {
+                    Ok(NIL)
+                }
+            }
+            And => {
+                let a = self.eval(self.first(args)?, env)?;
+                if a == NIL {
+                    return Ok(NIL);
+                }
+                self.eval(self.second(args)?, env)
+            }
+            Or => {
+                let a = self.eval(self.first(args)?, env)?;
+                if a != NIL {
+                    return Ok(a);
+                }
+                self.eval(self.second(args)?, env)
+            }
+            Not => {
+                let a = self.eval(self.first(args)?, env)?;
+                if a == NIL {
+                    self.int(1)
+                } else {
+                    Ok(NIL)
+                }
             }
         }
     }
