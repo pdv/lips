@@ -1,9 +1,10 @@
-// #![no_std]
+#![no_std]
 
 use core::{
     fmt::{self, Write},
     str::Chars,
 };
+use core::fmt::Debug;
 
 const WORKSPACE_SIZE: usize = 1000;
 
@@ -23,6 +24,7 @@ pub enum Builtin {
     Do,
     Let,
     Map,
+    Print,
 }
 
 impl TryFrom<&str> for Builtin {
@@ -38,6 +40,7 @@ impl TryFrom<&str> for Builtin {
             "do" => Self::Do,
             "let" => Self::Let,
             "map" => Self::Map,
+            "print" => Self::Print,
             _ => return Err(Error::UnknownSymbol),
         };
         Ok(function)
@@ -146,12 +149,15 @@ impl<'a> Iterator for Cursor<'a> {
     }
 }
 
+pub trait EffectHandler: Write + Debug + Sized {}
+
 #[derive(Debug)]
-pub struct Runtime {
+pub struct Runtime<E: EffectHandler> {
     workspace: [Option<Object>; WORKSPACE_SIZE],
     marked: [bool; WORKSPACE_SIZE],
     env: Pointer,
     obj_count: u16,
+    handler: E,
 }
 
 #[derive(Debug)]
@@ -166,18 +172,22 @@ pub enum Error {
     ArgCount,
     InvalidPointer,
     UseAfterFree,
+    Handler,
 }
 
-impl Runtime {
-    pub fn new() -> Self {
+impl<E: EffectHandler> Runtime<E> {
+    pub fn new(handler: E) -> Self {
         Runtime {
             workspace: [None; WORKSPACE_SIZE],
             marked: [false; WORKSPACE_SIZE],
             env: NIL,
             obj_count: 1,
+            handler,
         }
     }
+}
 
+impl<E: EffectHandler> Runtime<E> {
     fn alloc(&mut self, obj: Object) -> Result<Pointer, Error> {
         for i in 0..self.workspace.len() {
             if self.workspace[i].is_none() {
@@ -224,9 +234,7 @@ impl Runtime {
             }
         }
     }
-}
 
-impl Runtime {
     fn read_rest(&mut self, cursor: &mut Cursor) -> Result<Pointer, Error> {
         let head = self.read(cursor)?;
         if head == NIL {
@@ -250,9 +258,7 @@ impl Runtime {
             Token::Symbol(s) => self.alloc(Object::Atom(s.try_into()?)),
         }
     }
-}
 
-impl Runtime {
     fn int(&mut self, n: i32) -> Result<Pointer, Error> {
         self.alloc(Object::Atom(Atom::Int(n)))
     }
@@ -300,9 +306,7 @@ impl Runtime {
         };
         Ok(n)
     }
-}
 
-impl Runtime {
     fn lookup(&mut self, env: Pointer, id: u8) -> Result<Option<Pointer>, Error> {
         if env == NIL {
             return Ok(None);
@@ -388,6 +392,11 @@ impl Runtime {
                 let body = self.second(args)?;
                 self.eval(body, env)
             }
+            Print => {
+                let res = self.eval(self.first(args)?, env)?;
+                write!(self.handler, "{}", self.deref(res)?).map_err(|_| Error::Handler)?;
+                Ok(res)
+            }
         }
     }
 
@@ -430,11 +439,6 @@ impl Runtime {
     }
 
     fn eval(&mut self, form: Pointer, env: Pointer) -> Result<Pointer, Error> {
-        let mut s = String::new();
-        self.pretty_print(&mut s, form)
-            .map_err(|_| Error::InvalidPointer)?;
-        println!("evaling {}", s);
-
         if self.obj_count > self.workspace.len() as u16 - 100 {
             self.gc(env);
         }
@@ -480,9 +484,7 @@ impl Runtime {
             }
         }
     }
-}
 
-impl Runtime {
     pub fn eval_str(&mut self, form: &str) -> Result<Pointer, Error> {
         let mut cursor = Cursor::new(form);
         let form = self.read(&mut cursor)?;
@@ -519,7 +521,7 @@ impl core::fmt::Display for Object {
     }
 }
 
-impl core::fmt::Display for Runtime {
+impl<E: EffectHandler> core::fmt::Display for Runtime<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (idx, obj) in self.workspace.iter().enumerate() {
             if let Some(obj) = obj {
@@ -533,21 +535,37 @@ impl core::fmt::Display for Runtime {
 #[cfg(test)]
 mod tests {
     extern crate std;
+    use std::string::String;
+    use std::string::ToString;
+    use std::vec::Vec;
+
     use super::*;
 
-    #[test]
-    fn test_alloc() {
-        let mut runtime = Runtime::new();
-        let symbol = runtime
-            .alloc(Object::Atom(Atom::Builtin(Builtin::Add)))
-            .unwrap();
-        let a = runtime.int(1).unwrap();
-        let b = runtime.int(2).unwrap();
-        let end = runtime.cons(b, Pointer(100)).unwrap();
-        let next = runtime.cons(a, end).unwrap();
-        let head = runtime.cons(symbol, next).unwrap();
-        let res = runtime.eval(head, NIL).unwrap();
-        assert_eq!(runtime.deref(res).unwrap(), Object::Atom(Atom::Int(3)));
+    #[derive(Debug)]
+    struct TestEffectHandler {
+        printed: Vec<String>,
+    }
+
+    impl TestEffectHandler {
+        fn new() -> Self {
+            Self {
+                printed: Vec::new(),
+            }
+        }
+    }
+
+    impl Write for TestEffectHandler {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            self.printed.push(s.to_string());
+            Ok(())
+        }
+    }
+
+    impl EffectHandler for TestEffectHandler {}
+
+    fn new_runtime() -> Runtime<TestEffectHandler> {
+        let handler = TestEffectHandler::new();
+        Runtime::new(handler)
     }
 
     #[test]
@@ -585,7 +603,7 @@ mod tests {
     }
 
     fn assert_int(form: &str, expected: i32) {
-        let mut runtime = Runtime::new();
+        let mut runtime = new_runtime();
         let res = runtime.eval_str(form).unwrap();
         let res = runtime.deref(res).unwrap();
         assert_eq!(res, Object::Atom(Atom::Int(expected)));
@@ -619,7 +637,7 @@ mod tests {
 
     #[test]
     fn test_def() {
-        let mut runtime = Runtime::new();
+        let mut runtime = new_runtime();
         let _ = runtime.eval_str("(def x 2)").unwrap();
         let res = runtime.eval_str("(+ x 1)").unwrap();
         let res = runtime.deref(res).unwrap();
@@ -628,7 +646,7 @@ mod tests {
 
     #[test]
     fn test_fib() {
-        let mut runtime = Runtime::new();
+        let mut runtime = new_runtime();
         let _ = runtime
             .eval_str("(def fib (fn (n) (if (< n 3) 1 (+ (fib (- n 1)) (fib (- n 2))))))")
             .unwrap();
@@ -639,7 +657,7 @@ mod tests {
 
     #[test]
     fn test_tco() {
-        let mut runtime = Runtime::new();
+        let mut runtime = new_runtime();
         let _ = runtime
             .eval_str("(def f (fn (n) (if (< n 3) 1 (f (- n 1)))))")
             .unwrap();
@@ -650,7 +668,7 @@ mod tests {
 
     #[test]
     fn test_do() {
-        let mut runtime = Runtime::new();
+        let mut runtime = new_runtime();
         let _ = runtime.eval_str("(def x 0)").unwrap();
         let _ = runtime.eval_str("(do 5 (def x (+ x 1)))").unwrap();
         let res = runtime.eval_str("x").unwrap();

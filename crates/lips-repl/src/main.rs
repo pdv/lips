@@ -1,10 +1,23 @@
 use std::error::Error;
 
-use lips_lang::{NIL, Pointer, Runtime};
+use lips_lang::{EffectHandler, NIL, Pointer, Runtime};
+
+#[derive(Debug)]
+struct StdEffectHandler {}
+
+impl core::fmt::Write for StdEffectHandler {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        println!("{}", s);
+        Ok(())
+    }
+}
+
+impl EffectHandler for StdEffectHandler {}
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut rl = rustyline::DefaultEditor::new()?;
-    let mut runtime = Runtime::new();
+    let handler = StdEffectHandler {};
+    let mut runtime = Runtime::new(handler);
     loop {
         let readline = rl.readline(">> ")?;
         let (cmd, arg) = readline
