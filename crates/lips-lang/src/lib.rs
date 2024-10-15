@@ -49,9 +49,10 @@ impl TryFrom<&str> for Builtin {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Atom {
-    Identifier(u8),
+    Char(char),
     Int(i32),
     Builtin(Builtin),
+    Identifier(u8),
 }
 
 impl TryFrom<&str> for Atom {
@@ -64,7 +65,7 @@ impl TryFrom<&str> for Atom {
         } else if let Some(id) = value.bytes().next() {
             Ok(Self::Identifier(id))
         } else {
-            Err(Error::SyntaxError)
+            Err(Error::SyntaxError("invalid atom"))
         }
     }
 }
@@ -86,17 +87,21 @@ enum Token<'a> {
     OpenParen,
     CloseParen,
     Quote,
+    OpenDoubleQuote,
+    CloseDoubleQuote,
     Symbol(&'a str),
 }
 
 struct Cursor<'a> {
     chars: Chars<'a>,
+    in_quote: bool,
 }
 
 impl<'a> Cursor<'a> {
     fn new(input: &'a str) -> Self {
         Self {
             chars: input.chars(),
+            in_quote: false,
         }
     }
 
@@ -112,8 +117,8 @@ impl<'a> Cursor<'a> {
         let remaining = self.chars.as_str();
         let mut len = 0;
         while !self.chars.as_str().is_empty() && predicate(self.peek()) {
-            let _ = self.chars.next();
-            len += 1;
+            let c = self.chars.next();
+            len += c.unwrap().len_utf8();
         }
         &remaining[..len]
     }
@@ -137,13 +142,29 @@ impl<'a> Iterator for Cursor<'a> {
                 self.eat_one();
                 Ok(Token::Quote)
             }
-            ' ' => {
+            ' ' | '\n' if !self.in_quote => {
                 self.eat_one();
                 return self.next();
             }
-            _ => Ok(Token::Symbol(self.eat_while(|c| {
-                c.is_alphanumeric() || c == '+' || c == '-' || c == '<'
-            }))),
+            '"' => {
+                self.eat_one();
+                if self.in_quote {
+                    self.in_quote = false;
+                    Ok(Token::CloseDoubleQuote)
+                } else {
+                    self.in_quote = true;
+                    Ok(Token::OpenDoubleQuote)
+                }
+            }
+            _ => {
+                if self.in_quote {
+                    Ok(Token::Symbol(self.eat_while(|c| c != '"')))
+                } else {
+                    Ok(Token::Symbol(self.eat_while(|c| {
+                        c.is_alphanumeric() || c == '+' || c == '-' || c == '<'
+                    })))
+                }
+            }
         };
         Some(token)
     }
@@ -168,7 +189,7 @@ pub enum Error {
     NullPointer,
     UnknownSymbol,
     TypeError(&'static str),
-    SyntaxError,
+    SyntaxError(&'static str),
     ArgCount,
     InvalidPointer,
     UseAfterFree,
@@ -255,6 +276,18 @@ impl<E: EffectHandler> Runtime<E> {
                 let quoted = self.read(cursor)?;
                 self.cons(NIL, quoted)
             }
+            Token::OpenDoubleQuote => {
+                let Some(Ok(Token::Symbol(string))) = cursor.next() else {
+                    return Err(Error::SyntaxError("expected symbol after quote"));
+                };
+                let mut s = NIL;
+                for c in string.chars().rev() {
+                    let c = self.alloc(Object::Atom(Atom::Char(c)))?;
+                    s = self.cons(c, s)?;
+                }
+                Ok(s)
+            }
+            Token::CloseDoubleQuote => Ok(NIL),
             Token::Symbol(s) => self.alloc(Object::Atom(s.try_into()?)),
         }
     }
@@ -456,6 +489,7 @@ impl<E: EffectHandler> Runtime<E> {
                 }
                 let func = self.eval(func, env)?;
                 match self.deref(func)? {
+                    Object::Atom(Atom::Char(_)) => Ok(form),
                     Object::Atom(Atom::Builtin(builtin)) => self.builtin(builtin, args, env),
                     Object::Cons(params, body) => self.apply(params, args, body, env),
                     _ => Err(Error::TypeError("eval")),
@@ -498,6 +532,7 @@ impl core::fmt::Display for Atom {
             Atom::Builtin(b) => write!(f, "{:?}", b),
             Atom::Identifier(x) => write!(f, "{}", *x as char),
             Atom::Int(n) => write!(f, "{}", n),
+            Atom::Char(c) => write!(f, "{}", c),
         }
     }
 }
