@@ -33,6 +33,8 @@ enum Builtin {
     Peek,
     Env,
     Eval,
+    List,
+    Cons,
 }
 
 impl TryFrom<&str> for Builtin {
@@ -58,6 +60,8 @@ impl TryFrom<&str> for Builtin {
             "peek" => Self::Peek,
             "env" => Self::Env,
             "eval" => Self::Eval,
+            "list" => Self::List,
+            "cons" => Self::Cons,
             _ => return Err(Error::UnknownSymbol),
         };
         Ok(function)
@@ -305,9 +309,10 @@ impl<E: EffectHandler> Runtime<E> {
                     let c = self.alloc(Object::Atom(Atom::Char(c)))?;
                     s = self.cons(c, s)?;
                 }
+                let _ = cursor.next(); // close quote
                 Ok(s)
             }
-            Token::CloseDoubleQuote => Ok(NIL),
+            Token::CloseDoubleQuote => Err(Error::EndOfList),
             Token::Symbol(s) => self.alloc(Object::Atom(s.try_into()?)),
         }
     }
@@ -367,6 +372,16 @@ impl<E: EffectHandler> Runtime<E> {
         } else {
             self.lookup(rest, id)
         }
+    }
+
+    fn eval_all(&mut self, list: Pointer, env: Pointer) -> Result<Pointer, Error> {
+        if list == NIL {
+            return Ok(NIL);
+        }
+        let (car, cdr) = self.split(list)?;
+        let head = self.eval(car, env)?;
+        let tail = self.eval_all(cdr, env)?;
+        self.cons(head, tail)
     }
 
     fn builtin(&mut self, builtin: Builtin, args: Pointer, env: Pointer) -> Result<Pointer, Error> {
@@ -501,6 +516,12 @@ impl<E: EffectHandler> Runtime<E> {
                 let a = self.eval(self.first(args)?, env)?;
                 self.eval(a, env)
             }
+            List => self.eval_all(args, env),
+            Cons => {
+                let a = self.eval(self.first(args)?, env)?;
+                let b = self.eval(self.second(args)?, env)?;
+                self.cons(a, b)
+            }
         }
     }
 
@@ -624,7 +645,9 @@ impl<E: EffectHandler> Runtime<E> {
                         self.pprint(car)?;
                         head = cdr;
                     } else {
+                        self.write(". ")?;
                         self.pprint(head)?;
+                        head = NIL;
                     }
                 }
                 self.write(")")
