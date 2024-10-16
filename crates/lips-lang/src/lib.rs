@@ -1,8 +1,7 @@
 #![no_std]
 
-use core::fmt::Debug;
 use core::{
-    fmt::{self, Write},
+    fmt::{self, Debug, Write},
     str::Chars,
 };
 
@@ -33,6 +32,7 @@ enum Builtin {
     Dump,
     Peek,
     Env,
+    Eval,
 }
 
 impl TryFrom<&str> for Builtin {
@@ -57,6 +57,7 @@ impl TryFrom<&str> for Builtin {
             "dump" => Self::Dump,
             "peek" => Self::Peek,
             "env" => Self::Env,
+            "eval" => Self::Eval,
             _ => return Err(Error::UnknownSymbol),
         };
         Ok(function)
@@ -210,6 +211,7 @@ pub enum Error {
     InvalidPointer,
     UseAfterFree,
     Handler(fmt::Error),
+    EndOfList,
 }
 
 impl<E: EffectHandler> Runtime<E> {
@@ -273,12 +275,14 @@ impl<E: EffectHandler> Runtime<E> {
     }
 
     fn read_rest(&mut self, cursor: &mut Cursor) -> Result<Pointer, Error> {
-        let head = self.read(cursor)?;
-        if head == NIL {
-            return Ok(NIL);
+        match self.read(cursor) {
+            Ok(head) => {
+                let tail = self.read_rest(cursor)?;
+                self.cons(head, tail)
+            }
+            Err(Error::EndOfList) => Ok(NIL),
+            e => e,
         }
-        let tail = self.read_rest(cursor)?;
-        self.cons(head, tail)
     }
 
     fn read(&mut self, cursor: &mut Cursor) -> Result<Pointer, Error> {
@@ -287,7 +291,7 @@ impl<E: EffectHandler> Runtime<E> {
         };
         match token {
             Token::OpenParen => self.read_rest(cursor),
-            Token::CloseParen => Ok(NIL),
+            Token::CloseParen => Err(Error::EndOfList), // I do not like this
             Token::Quote => {
                 let quoted = self.read(cursor)?;
                 self.cons(NIL, quoted)
@@ -492,6 +496,10 @@ impl<E: EffectHandler> Runtime<E> {
                 let p = Pointer(self.deref_int(a)? as u16);
                 self.pprint(p)?;
                 Ok(p)
+            }
+            Eval => {
+                let a = self.eval(self.first(args)?, env)?;
+                self.eval(a, env)
             }
         }
     }
