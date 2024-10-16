@@ -1,20 +1,20 @@
 #![no_std]
 
+use core::fmt::Debug;
 use core::{
     fmt::{self, Write},
     str::Chars,
 };
-use core::fmt::Debug;
 
 const WORKSPACE_SIZE: usize = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Pointer(pub u16);
+pub struct Pointer(u16);
 
-pub const NIL: Pointer = Pointer(u16::MAX);
+const NIL: Pointer = Pointer(u16::MAX);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Builtin {
+enum Builtin {
     Def,
     Add,
     Sub,
@@ -29,6 +29,10 @@ pub enum Builtin {
     And,
     Or,
     Not,
+    Gc,
+    Dump,
+    Peek,
+    Env,
 }
 
 impl TryFrom<&str> for Builtin {
@@ -49,6 +53,10 @@ impl TryFrom<&str> for Builtin {
             "and" => Self::And,
             "or" => Self::Or,
             "not" => Self::Not,
+            "gc" => Self::Gc,
+            "dump" => Self::Dump,
+            "peek" => Self::Peek,
+            "env" => Self::Env,
             _ => return Err(Error::UnknownSymbol),
         };
         Ok(function)
@@ -56,7 +64,7 @@ impl TryFrom<&str> for Builtin {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Atom {
+enum Atom {
     Char(char),
     Int(i32),
     Builtin(Builtin),
@@ -79,7 +87,7 @@ impl TryFrom<&str> for Atom {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Object {
+enum Object {
     Atom(Atom),
     Cons(Pointer, Pointer),
 }
@@ -201,7 +209,7 @@ pub enum Error {
     ArgCount,
     InvalidPointer,
     UseAfterFree,
-    Handler,
+    Handler(fmt::Error),
 }
 
 impl<E: EffectHandler> Runtime<E> {
@@ -252,7 +260,7 @@ impl<E: EffectHandler> Runtime<E> {
         self.mark(cdr);
     }
 
-    pub fn gc(&mut self, env: Pointer) {
+    fn gc(&mut self, env: Pointer) {
         self.marked.fill(false);
         self.mark(self.env);
         self.mark(env);
@@ -431,8 +439,9 @@ impl<E: EffectHandler> Runtime<E> {
             }
             Print => {
                 let res = self.eval(self.first(args)?, env)?;
-                write!(self.handler, "{}", self.deref(res)?).map_err(|_| Error::Handler)?;
-                Ok(res)
+                self.pprint(res)?;
+                self.write("\n")?;
+                Ok(NIL)
             }
             Eq => {
                 let a = self.eval(self.first(args)?, env)?;
@@ -465,6 +474,25 @@ impl<E: EffectHandler> Runtime<E> {
                     Ok(NIL)
                 }
             }
+            Dump => {
+                for (idx, obj) in self.workspace.iter().enumerate() {
+                    if let Some(obj) = obj {
+                        writeln!(self.handler, "\r{}: {}", idx, obj).map_err(Error::Handler)?;
+                    }
+                }
+                Ok(NIL)
+            }
+            Gc => {
+                self.gc(env);
+                Ok(NIL)
+            }
+            Env => Ok(self.env),
+            Peek => {
+                let a = self.eval(self.first(args)?, env)?;
+                let p = Pointer(self.deref_int(a)? as u16);
+                self.pprint(p)?;
+                Ok(p)
+            }
         }
     }
 
@@ -496,6 +524,9 @@ impl<E: EffectHandler> Runtime<E> {
         let mut params = params;
         let mut args = args;
         while params != NIL {
+            if args == NIL {
+                return Err(Error::ArgCount);
+            }
             let param = self.car(params)?;
             let arg = self.eval(self.car(args)?, env)?;
             let assignment = self.cons(param, arg)?;
@@ -533,23 +564,62 @@ impl<E: EffectHandler> Runtime<E> {
         }
     }
 
-    pub fn pretty_print(&self, writer: &mut impl Write, form: Pointer) -> Result<(), fmt::Error> {
+    fn write(&mut self, s: impl fmt::Display) -> Result<(), Error> {
+        write!(&mut self.handler, "{}", s).map_err(Error::Handler)
+    }
+}
+
+impl<E: EffectHandler> Runtime<E> {
+    fn is_str(&self, pointer: Pointer) -> Result<bool, Error> {
+        match self.deref(pointer) {
+            Ok(Object::Atom(_)) => Ok(false),
+            Ok(Object::Cons(car, _)) => match self.deref(car) {
+                Ok(Object::Atom(Atom::Char(_))) => Ok(true),
+                Ok(_) => Ok(false),
+                Err(Error::NullPointer) => Ok(false),
+                Err(e) => Err(e),
+            },
+            Err(Error::NullPointer) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn pprint_str(&mut self, s: Pointer) -> Result<(), Error> {
+        let mut head = s;
+        while head != NIL {
+            let (first, rest) = self.split(head)?;
+            let Object::Atom(Atom::Char(c)) = self.deref(first)? else {
+                return Err(Error::TypeError("pprint_str expected string"));
+            };
+            self.write(c)?;
+            head = rest;
+        }
+        Ok(())
+    }
+
+    pub fn pprint(&mut self, form: Pointer) -> Result<(), Error> {
         if form == NIL {
-            return write!(writer, "nil");
+            return self.write("nil");
+        }
+        if self.is_str(form)? {
+            return self.pprint_str(form);
         }
         match self.deref(form).unwrap() {
-            Object::Atom(a) => write!(writer, "{}", a),
+            Object::Atom(a) => self.write(a),
             Object::Cons(car, cdr) => {
-                write!(writer, "(")?;
-                self.pretty_print(writer, car)?;
+                self.write("(")?;
+                self.pprint(car)?;
                 let mut head = cdr;
                 while head != NIL {
-                    write!(writer, " ")?;
-                    let (car, cdr) = self.split(head).unwrap();
-                    self.pretty_print(writer, car)?;
-                    head = cdr;
+                    self.write(" ")?;
+                    if let Ok((car, cdr)) = self.split(head) {
+                        self.pprint(car)?;
+                        head = cdr;
+                    } else {
+                        self.pprint(head)?;
+                    }
                 }
-                write!(writer, ")")
+                self.write(")")
             }
         }
     }
@@ -561,7 +631,7 @@ impl<E: EffectHandler> Runtime<E> {
     }
 }
 
-impl core::fmt::Display for Atom {
+impl fmt::Display for Atom {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Atom::Builtin(b) => write!(f, "{:?}", b),
@@ -572,7 +642,7 @@ impl core::fmt::Display for Atom {
     }
 }
 
-impl core::fmt::Display for Pointer {
+impl fmt::Display for Pointer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self == &NIL {
             write!(f, "nil")
@@ -582,7 +652,7 @@ impl core::fmt::Display for Pointer {
     }
 }
 
-impl core::fmt::Display for Object {
+impl fmt::Display for Object {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Object::Atom(a) => write!(f, "{}", a),
@@ -591,7 +661,7 @@ impl core::fmt::Display for Object {
     }
 }
 
-impl<E: EffectHandler> core::fmt::Display for Runtime<E> {
+impl<E: EffectHandler> fmt::Display for Runtime<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (idx, obj) in self.workspace.iter().enumerate() {
             if let Some(obj) = obj {

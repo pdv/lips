@@ -12,7 +12,7 @@ use microbit::{
 use panic_rtt_target as _;
 use rtt_target::{rprintln, rtt_init_print};
 
-use lips_lang::{self, EffectHandler, NIL, Runtime};
+use lips_lang::{self, EffectHandler, Runtime};
 
 #[derive(Debug)]
 struct MicrobitEffectHandler {}
@@ -52,22 +52,13 @@ fn main() -> ! {
         match rx_buffer[0] {
             b'\n' | b'\r' => {
                 writeln!(serial, "").unwrap();
-                match input.as_str() {
-                    "\\dump" => {
-                        writeln!(serial, "\r{}", runtime).unwrap();
+                match runtime.eval_str(input.as_str()) {
+                    Ok(obj) => {
+                        write!(serial, "\r").unwrap();
+                        runtime.pprint(obj).unwrap();
+                        writeln!(serial, "\r").unwrap();
                     }
-                    "\\gc" => {
-                        runtime.gc(NIL);
-                        writeln!(serial, "").unwrap();
-                    }
-                    _ => match runtime.eval_str(input.as_str()) {
-                        Ok(obj) => {
-                            write!(serial, "\r").unwrap();
-                            runtime.pretty_print(&mut serial, obj).unwrap();
-                            writeln!(serial, "\r").unwrap();
-                        }
-                        Err(e) => writeln!(serial, "\rError: {:?}", e).unwrap(),
-                    },
+                    Err(e) => writeln!(serial, "\rError: {:?}", e).unwrap(),
                 }
                 input.clear();
                 write!(serial, "\r> ").unwrap();

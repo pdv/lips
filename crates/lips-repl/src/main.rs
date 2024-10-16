@@ -6,7 +6,7 @@ use reedline::{
     Highlighter, Prompt, PromptEditMode, PromptHistorySearch, Reedline, Signal, StyledText,
 };
 
-use lips_lang::{EffectHandler, NIL, Pointer, Runtime};
+use lips_lang::{EffectHandler, Runtime};
 
 #[derive(Debug)]
 
@@ -14,7 +14,7 @@ struct StdEffectHandler {}
 
 impl core::fmt::Write for StdEffectHandler {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        println!("{}", s);
+        print!("{}", s);
         Ok(())
     }
 }
@@ -112,25 +112,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         let Signal::Success(readline) = rl.read_line(&prompt)? else {
             panic!("readline failure")
         };
-        let (cmd, arg) = readline.split_once(" ").unwrap_or((&readline, ""));
-        match cmd {
-            "\\dump" => print!("{}", runtime),
-            "\\gc" => {
-                runtime.gc(NIL);
-            }
-            "\\pprint" => {
-                let mut s = String::new();
-                runtime.pretty_print(&mut s, Pointer(arg.parse()?))?;
-                println!("{}", s);
-            }
-            _ => match runtime.eval_str(&readline) {
-                Ok(obj) => {
-                    let mut s = String::new();
-                    runtime.pretty_print(&mut s, obj).unwrap();
-                    println!("{}", s);
-                }
-                Err(e) => println!("Error: {:?}", e),
-            },
+        match runtime.eval_str(&readline) {
+            Ok(res) => runtime.pprint(res).unwrap(),
+            Err(e) => print!("Error: {:?}", e),
         }
+        println!();
     }
 }
