@@ -2,7 +2,6 @@
 
 use core::{
     fmt::{self, Debug, Write},
-    ops::Index,
     str::FromStr,
 };
 
@@ -27,6 +26,7 @@ enum Builtin {
     Do,
     Let,
     Map,
+    Apply,
     Print,
     Eq,
     And,
@@ -60,6 +60,7 @@ impl TryFrom<&str> for Builtin {
             "do" => Self::Do,
             "let" => Self::Let,
             "map" => Self::Map,
+            "apply" => Self::Apply,
             "print" => Self::Print,
             "=" => Self::Eq,
             "and" => Self::And,
@@ -235,16 +236,16 @@ impl<E: EffectHandler> Runtime<E> {
     }
 
     fn lookup(&mut self, env: Pointer, id: u16) -> Result<Option<Pointer>, Error> {
-        if env == NIL {
-            return Ok(None);
+        let mut head = env;
+        while head != NIL {
+            let (entry, rest) = self.split(head)?;
+            let (key, value) = self.split(entry)?;
+            if self.deref_inner(key)? == Object::Atom(Atom::Identifier(id)) {
+                return Ok(Some(value));
+            }
+            head = rest;
         }
-        let (entry, rest) = self.split(env)?;
-        let (key, value) = self.split(entry)?;
-        if self.deref_inner(key)? == Object::Atom(Atom::Identifier(id)) {
-            Ok(Some(value))
-        } else {
-            self.lookup(rest, id)
-        }
+        Ok(None)
     }
 
     fn eval_all(&mut self, list: Pointer, env: Pointer) -> Result<Pointer, Error> {
@@ -333,17 +334,22 @@ impl<E: EffectHandler> Runtime<E> {
             Do => {
                 let times = self.eval(self.first(args)?, env)?;
                 let body = self.second(args)?;
+                let function = self.cons(NIL, body)?;
                 let mut res = NIL;
                 for _ in 0..self.deref_int(times)? {
-                    res = self.apply(NIL, NIL, body, env)?;
+                    res = self.apply(function, NIL, env)?;
                 }
                 Ok(res)
             }
             Map => {
                 let function = self.eval(self.first(args)?, env)?;
-                let (params, body) = self.split(function)?;
                 let list = self.eval(self.second(args)?, env)?;
-                self.map(params, body, list, env)
+                self.map(function, list, env)
+            }
+            Apply => {
+                let function = self.eval(self.first(args)?, env)?;
+                let args = self.eval(self.second(args)?, env)?;
+                self.apply(function, args, env)
             }
             Let => {
                 let mut bindings = self.first(args)?;
@@ -435,45 +441,39 @@ impl<E: EffectHandler> Runtime<E> {
         }
     }
 
-    fn map(
-        &mut self,
-        params: Pointer,
-        body: Pointer,
-        list: Pointer,
-        env: Pointer,
-    ) -> Result<Pointer, Error> {
+    fn map(&mut self, function: Pointer, list: Pointer, env: Pointer) -> Result<Pointer, Error> {
         if list == NIL {
             return Ok(NIL);
         }
         let (arg, rest) = self.split(list)?;
         let args = self.cons(arg, NIL)?;
-        let res = self.apply(params, args, body, env)?;
-        let tail = self.map(params, body, rest, env)?;
+        let res = self.apply(function, args, env)?;
+        let tail = self.map(function, rest, env)?;
         self.cons(res, tail)
     }
 
-    fn apply(
-        &mut self,
-        params: Pointer,
-        args: Pointer,
-        body: Pointer,
-        env: Pointer,
-    ) -> Result<Pointer, Error> {
-        let mut env = env;
-        let mut params = params;
-        let mut args = args;
-        while params != NIL {
-            if args == NIL {
-                return Err(Error::ArgCount);
+    fn apply(&mut self, function: Pointer, args: Pointer, env: Pointer) -> Result<Pointer, Error> {
+        match self.deref_inner(function)? {
+            Object::Atom(Atom::Builtin(builtin)) => self.builtin(builtin, args, env),
+            Object::Cons(params, body) => {
+                let mut env = env;
+                let mut params = params;
+                let mut args = args;
+                while params != NIL {
+                    if args == NIL {
+                        return Err(Error::ArgCount);
+                    }
+                    let param = self.car(params)?;
+                    let arg = self.eval(self.car(args)?, env)?;
+                    let assignment = self.cons(param, arg)?;
+                    env = self.cons(assignment, env)?;
+                    params = self.cdr(params)?;
+                    args = self.cdr(args)?;
+                }
+                self.eval(body, env)
             }
-            let param = self.car(params)?;
-            let arg = self.eval(self.car(args)?, env)?;
-            let assignment = self.cons(param, arg)?;
-            env = self.cons(assignment, env)?;
-            params = self.cdr(params)?;
-            args = self.cdr(args)?;
+            _ => Err(Error::TypeError("not a function")),
         }
-        self.eval(body, env)
     }
 
     fn eval(&mut self, form: Pointer, env: Pointer) -> Result<Pointer, Error> {
@@ -492,9 +492,7 @@ impl<E: EffectHandler> Runtime<E> {
                 let func = self.eval(func, env)?;
                 match self.deref_inner(func)? {
                     Object::Atom(Atom::Char(_)) => Ok(form),
-                    Object::Atom(Atom::Builtin(builtin)) => self.builtin(builtin, args, env),
-                    Object::Cons(params, body) => self.apply(params, args, body, env),
-                    _ => Err(Error::TypeError("eval")),
+                    _ => self.apply(func, args, env),
                 }
             }
         }
