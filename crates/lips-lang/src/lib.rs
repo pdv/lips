@@ -1,16 +1,12 @@
 #![no_std]
 
-use core::{
-    fmt::{self, Debug, Write},
-    str::Chars,
-};
+use core::fmt::{self, Debug, Write};
 
-const WORKSPACE_SIZE: usize = 1000;
+use arena::{Arena, Object, Pointer, NIL};
+use lexer::{Cursor, Token};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Pointer(u16);
-
-const NIL: Pointer = Pointer(u16::MAX);
+mod arena;
+mod lexer;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Builtin {
@@ -29,8 +25,6 @@ enum Builtin {
     Or,
     Not,
     Gc,
-    Dump,
-    Peek,
     Env,
     Eval,
     List,
@@ -56,8 +50,6 @@ impl TryFrom<&str> for Builtin {
             "or" => Self::Or,
             "not" => Self::Not,
             "gc" => Self::Gc,
-            "dump" => Self::Dump,
-            "peek" => Self::Peek,
             "env" => Self::Env,
             "eval" => Self::Eval,
             "list" => Self::List,
@@ -91,123 +83,20 @@ impl TryFrom<&str> for Atom {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Object {
-    Atom(Atom),
-    Cons(Pointer, Pointer),
-}
-
-impl From<i32> for Object {
-    fn from(value: i32) -> Self {
-        Self::Atom(Atom::Int(value))
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum Token<'a> {
-    OpenParen,
-    CloseParen,
-    Quote,
-    OpenDoubleQuote,
-    CloseDoubleQuote,
-    Symbol(&'a str),
-}
-
-struct Cursor<'a> {
-    chars: Chars<'a>,
-    in_quote: bool,
-}
-
-impl<'a> Cursor<'a> {
-    fn new(input: &'a str) -> Self {
-        Self {
-            chars: input.chars(),
-            in_quote: false,
-        }
-    }
-
-    fn peek(&self) -> char {
-        self.chars.clone().next().unwrap_or('\0')
-    }
-
-    fn eat_one(&mut self) {
-        let _ = self.chars.next();
-    }
-
-    fn eat_while(&mut self, predicate: impl Fn(char) -> bool) -> &'a str {
-        let remaining = self.chars.as_str();
-        let mut len = 0;
-        while !self.chars.as_str().is_empty() && predicate(self.peek()) {
-            let c = self.chars.next();
-            len += c.unwrap().len_utf8();
-        }
-        &remaining[..len]
-    }
-}
-
-impl<'a> Iterator for Cursor<'a> {
-    type Item = Result<Token<'a>, Error>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let token = match self.peek() {
-            '\0' => return None,
-            '(' => {
-                self.eat_one();
-                Ok(Token::OpenParen)
-            }
-            ')' => {
-                self.eat_one();
-                Ok(Token::CloseParen)
-            }
-            '\'' => {
-                self.eat_one();
-                Ok(Token::Quote)
-            }
-            ' ' | '\n' if !self.in_quote => {
-                self.eat_one();
-                return self.next();
-            }
-            '"' => {
-                self.eat_one();
-                if self.in_quote {
-                    self.in_quote = false;
-                    Ok(Token::CloseDoubleQuote)
-                } else {
-                    self.in_quote = true;
-                    Ok(Token::OpenDoubleQuote)
-                }
-            }
-            _ => {
-                if self.in_quote {
-                    Ok(Token::Symbol(self.eat_while(|c| c != '"')))
-                } else {
-                    Ok(Token::Symbol(self.eat_while(|c| {
-                        !c.is_whitespace() && c != ')' && c != '(' && c != '"'
-                    })))
-                }
-            }
-        };
-        Some(token)
-    }
-}
-
 pub trait EffectHandler: Write + Debug + Sized {}
 
 #[derive(Debug)]
-pub struct Runtime<E: EffectHandler> {
-    workspace: [Option<Object>; WORKSPACE_SIZE],
-    marked: [bool; WORKSPACE_SIZE],
+pub struct Runtime<E> {
+    arena: Arena<Atom>,
     env: Pointer,
-    obj_count: u16,
     handler: E,
 }
 
 #[derive(Debug)]
 pub enum Error {
+    Arena(arena::Error),
     EndOfFile,
     NotFound(Pointer),
-    OutOfMemory,
-    NullPointer,
     UnknownSymbol,
     TypeError(&'static str),
     SyntaxError(&'static str),
@@ -221,61 +110,18 @@ pub enum Error {
 impl<E: EffectHandler> Runtime<E> {
     pub fn new(handler: E) -> Self {
         Runtime {
-            workspace: [None; WORKSPACE_SIZE],
-            marked: [false; WORKSPACE_SIZE],
+            arena: Arena::new(),
             env: NIL,
-            obj_count: 1,
             handler,
         }
     }
-}
 
-impl<E: EffectHandler> Runtime<E> {
-    fn alloc(&mut self, obj: Object) -> Result<Pointer, Error> {
-        for i in 0..self.workspace.len() {
-            if self.workspace[i].is_none() {
-                self.workspace[i] = Some(obj);
-                self.obj_count += 1;
-                return Ok(Pointer(i as u16));
-            }
-        }
-        Err(Error::OutOfMemory)
+    fn alloc_inner(&mut self, object: Object<Atom>) -> Result<Pointer, Error> {
+        self.arena.alloc(object).map_err(Error::Arena)
     }
 
-    fn deref(&self, pointer: Pointer) -> Result<Object, Error> {
-        if pointer == NIL {
-            return Err(Error::NullPointer);
-        }
-        self.workspace
-            .get(pointer.0 as usize)
-            .ok_or(Error::InvalidPointer)
-            .copied()
-            .transpose()
-            .unwrap_or(Err(Error::UseAfterFree))
-    }
-
-    fn mark(&mut self, pointer: Pointer) {
-        if pointer == NIL || self.marked[pointer.0 as usize] {
-            return;
-        }
-        self.marked[pointer.0 as usize] = true;
-        let Ok((car, cdr)) = self.split(pointer) else {
-            return;
-        };
-        self.mark(car);
-        self.mark(cdr);
-    }
-
-    fn gc(&mut self, env: Pointer) {
-        self.marked.fill(false);
-        self.mark(self.env);
-        self.mark(env);
-        for idx in 0..self.workspace.len() {
-            if !self.marked[idx] && self.workspace[idx].is_some() {
-                self.obj_count -= 1;
-                self.workspace[idx] = None;
-            }
-        }
+    fn deref_inner(&self, pointer: Pointer) -> Result<Object<Atom>, Error> {
+        self.arena.deref(pointer).ok_or(Error::InvalidPointer)
     }
 
     fn read_rest(&mut self, cursor: &mut Cursor) -> Result<Pointer, Error> {
@@ -306,27 +152,27 @@ impl<E: EffectHandler> Runtime<E> {
                 };
                 let mut s = NIL;
                 for c in string.chars().rev() {
-                    let c = self.alloc(Object::Atom(Atom::Char(c)))?;
+                    let c = self.alloc_inner(Object::Atom(Atom::Char(c)))?;
                     s = self.cons(c, s)?;
                 }
                 let _ = cursor.next(); // close quote
                 Ok(s)
             }
             Token::CloseDoubleQuote => Err(Error::EndOfList),
-            Token::Symbol(s) => self.alloc(Object::Atom(s.try_into()?)),
+            Token::Symbol(s) => self.alloc_inner(Object::Atom(s.try_into()?)),
         }
     }
 
     fn int(&mut self, n: i32) -> Result<Pointer, Error> {
-        self.alloc(Object::Atom(Atom::Int(n)))
+        self.alloc_inner(Object::Atom(Atom::Int(n)))
     }
 
     fn cons(&mut self, car: Pointer, cdr: Pointer) -> Result<Pointer, Error> {
-        self.alloc(Object::Cons(car, cdr))
+        self.alloc_inner(Object::Cons(car, cdr))
     }
 
     fn split(&self, pointer: Pointer) -> Result<(Pointer, Pointer), Error> {
-        let Object::Cons(car, cdr) = self.deref(pointer)? else {
+        let Object::Cons(car, cdr) = self.deref_inner(pointer)? else {
             return Err(Error::TypeError("trying to split atom"));
         };
         Ok((car, cdr))
@@ -355,7 +201,7 @@ impl<E: EffectHandler> Runtime<E> {
     }
 
     fn deref_int(&self, pointer: Pointer) -> Result<i32, Error> {
-        let Object::Atom(Atom::Int(n)) = self.deref(pointer)? else {
+        let Object::Atom(Atom::Int(n)) = self.deref_inner(pointer)? else {
             return Err(Error::TypeError("expected int"));
         };
         Ok(n)
@@ -367,7 +213,7 @@ impl<E: EffectHandler> Runtime<E> {
         }
         let (entry, rest) = self.split(env)?;
         let (key, value) = self.split(entry)?;
-        if self.deref(key)? == Object::Atom(Atom::Identifier(id)) {
+        if self.deref_inner(key)? == Object::Atom(Atom::Identifier(id)) {
             Ok(Some(value))
         } else {
             self.lookup(rest, id)
@@ -395,9 +241,15 @@ impl<E: EffectHandler> Runtime<E> {
                 Ok(key)
             }
             Add => {
-                let a = self.eval(self.first(args)?, env)?;
-                let b = self.eval(self.second(args)?, env)?;
-                self.int(self.deref_int(a)? + self.deref_int(b)?)
+                let mut sum = 0;
+                let mut head = args;
+                while head != NIL {
+                    let (car, cdr) = self.split(head)?;
+                    let arg = self.eval(car, env)?;
+                    sum += self.deref_int(arg)?;
+                    head = cdr;
+                }
+                self.int(sum)
             }
             Sub => {
                 let a = self.eval(self.first(args)?, env)?;
@@ -465,7 +317,7 @@ impl<E: EffectHandler> Runtime<E> {
             Eq => {
                 let a = self.eval(self.first(args)?, env)?;
                 let b = self.eval(self.second(args)?, env)?;
-                if self.deref(a)? == self.deref(b)? {
+                if self.deref_inner(a)? == self.deref_inner(b)? {
                     self.int(1) // TODO: true?
                 } else {
                     Ok(NIL)
@@ -493,25 +345,11 @@ impl<E: EffectHandler> Runtime<E> {
                     Ok(NIL)
                 }
             }
-            Dump => {
-                for (idx, obj) in self.workspace.iter().enumerate() {
-                    if let Some(obj) = obj {
-                        writeln!(self.handler, "\r{}: {}", idx, obj).map_err(Error::Handler)?;
-                    }
-                }
-                Ok(NIL)
-            }
             Gc => {
-                self.gc(env);
+                self.arena.gc(env);
                 Ok(NIL)
             }
             Env => Ok(self.env),
-            Peek => {
-                let a = self.eval(self.first(args)?, env)?;
-                let p = Pointer(self.deref_int(a)? as u16);
-                self.pprint(p)?;
-                Ok(p)
-            }
             Eval => {
                 let a = self.eval(self.first(args)?, env)?;
                 self.eval(a, env)
@@ -567,10 +405,7 @@ impl<E: EffectHandler> Runtime<E> {
     }
 
     fn eval(&mut self, form: Pointer, env: Pointer) -> Result<Pointer, Error> {
-        if self.obj_count > self.workspace.len() as u16 - 100 {
-            self.gc(env);
-        }
-        match self.deref(form)? {
+        match self.deref_inner(form)? {
             Object::Atom(atom) => match atom {
                 Atom::Identifier(id) => self
                     .lookup(env, id)?
@@ -583,7 +418,7 @@ impl<E: EffectHandler> Runtime<E> {
                     return Ok(args);
                 }
                 let func = self.eval(func, env)?;
-                match self.deref(func)? {
+                match self.deref_inner(func)? {
                     Object::Atom(Atom::Char(_)) => Ok(form),
                     Object::Atom(Atom::Builtin(builtin)) => self.builtin(builtin, args, env),
                     Object::Cons(params, body) => self.apply(params, args, body, env),
@@ -600,15 +435,15 @@ impl<E: EffectHandler> Runtime<E> {
 
 impl<E: EffectHandler> Runtime<E> {
     fn is_str(&self, pointer: Pointer) -> Result<bool, Error> {
-        match self.deref(pointer) {
+        match self.deref_inner(pointer) {
             Ok(Object::Atom(_)) => Ok(false),
-            Ok(Object::Cons(car, _)) => match self.deref(car) {
+            Ok(Object::Cons(car, _)) => match self.deref_inner(car) {
                 Ok(Object::Atom(Atom::Char(_))) => Ok(true),
                 Ok(_) => Ok(false),
-                Err(Error::NullPointer) => Ok(false),
+                Err(Error::InvalidPointer) => Ok(false),
                 Err(e) => Err(e),
             },
-            Err(Error::NullPointer) => Ok(false),
+            Err(Error::InvalidPointer) => Ok(false),
             Err(e) => Err(e),
         }
     }
@@ -617,7 +452,7 @@ impl<E: EffectHandler> Runtime<E> {
         let mut head = s;
         while head != NIL {
             let (first, rest) = self.split(head)?;
-            let Object::Atom(Atom::Char(c)) = self.deref(first)? else {
+            let Object::Atom(Atom::Char(c)) = self.deref_inner(first)? else {
                 return Err(Error::TypeError("pprint_str expected string"));
             };
             self.write(c)?;
@@ -633,7 +468,7 @@ impl<E: EffectHandler> Runtime<E> {
         if self.is_str(form)? {
             return self.pprint_str(form);
         }
-        match self.deref(form).unwrap() {
+        match self.deref_inner(form).unwrap() {
             Object::Atom(a) => self.write(a),
             Object::Cons(car, cdr) => {
                 self.write("(")?;
@@ -673,33 +508,9 @@ impl fmt::Display for Atom {
     }
 }
 
-impl fmt::Display for Pointer {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self == &NIL {
-            write!(f, "nil")
-        } else {
-            write!(f, "{}", self.0)
-        }
-    }
-}
-
-impl fmt::Display for Object {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Object::Atom(a) => write!(f, "{}", a),
-            Object::Cons(car, cdr) => write!(f, "({} {})", car, cdr),
-        }
-    }
-}
-
 impl<E: EffectHandler> fmt::Display for Runtime<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (idx, obj) in self.workspace.iter().enumerate() {
-            if let Some(obj) = obj {
-                writeln!(f, "\r{}: {}", idx, obj)?;
-            }
-        }
-        Ok(())
+        write!(f, "{}", self.arena)
     }
 }
 
@@ -776,7 +587,7 @@ mod tests {
     fn assert_int(form: &str, expected: i32) {
         let mut runtime = new_runtime();
         let res = runtime.eval_str(form).unwrap();
-        let res = runtime.deref(res).unwrap();
+        let res = runtime.deref_inner(res).unwrap();
         assert_eq!(res, Object::Atom(Atom::Int(expected)));
     }
 
@@ -811,8 +622,8 @@ mod tests {
         let mut runtime = new_runtime();
         let _ = runtime.eval_str("(def x 2)").unwrap();
         let res = runtime.eval_str("(+ x 1)").unwrap();
-        let res = runtime.deref(res).unwrap();
-        assert_eq!(res, 3.into());
+        let res = runtime.deref_inner(res).unwrap();
+        assert_eq!(res, Object::Atom(Atom::Int(3)));
     }
 
     #[test]
@@ -822,8 +633,8 @@ mod tests {
             .eval_str("(def fib (fn (n) (if (< n 3) 1 (+ (fib (- n 1)) (fib (- n 2))))))")
             .unwrap();
         let res = runtime.eval_str("(fib 10)").unwrap();
-        let res = runtime.deref(res).unwrap();
-        assert_eq!(res, 55.into());
+        let res = runtime.deref_inner(res).unwrap();
+        assert_eq!(res, Object::Atom(Atom::Int(55)));
     }
 
     #[test]
@@ -833,8 +644,8 @@ mod tests {
             .eval_str("(def f (fn (n) (if (< n 3) 1 (f (- n 1)))))")
             .unwrap();
         let res = runtime.eval_str("(f 100)").unwrap();
-        let res = runtime.deref(res).unwrap();
-        assert_eq!(res, 1.into());
+        let res = runtime.deref_inner(res).unwrap();
+        assert_eq!(res, Object::Atom(Atom::Int(1)));
     }
 
     #[test]
@@ -843,7 +654,7 @@ mod tests {
         let _ = runtime.eval_str("(def x 0)").unwrap();
         let _ = runtime.eval_str("(do 5 (def x (+ x 1)))").unwrap();
         let res = runtime.eval_str("x").unwrap();
-        let res = runtime.deref(res).unwrap();
-        assert_eq!(res, 5.into());
+        let res = runtime.deref_inner(res).unwrap();
+        assert_eq!(res, Object::Atom(Atom::Int(5)));
     }
 }

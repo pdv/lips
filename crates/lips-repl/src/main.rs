@@ -112,6 +112,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         let Signal::Success(readline) = rl.read_line(&prompt)? else {
             panic!("readline failure")
         };
+        if readline.as_str() == "\\dump" {
+            print!("{}", runtime);
+            continue;
+        }
         match runtime.eval_str(&readline) {
             Ok(res) => runtime.pprint(res).unwrap(),
             Err(e) => print!("Error: {:?}", e),
