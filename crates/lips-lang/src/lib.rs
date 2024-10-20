@@ -1,8 +1,13 @@
 #![no_std]
 
-use core::fmt::{self, Debug, Write};
+use core::{
+    fmt::{self, Debug, Write},
+    ops::Index,
+    str::FromStr,
+};
 
 use arena::{Arena, Object, Pointer, NIL};
+use heapless::{String, Vec};
 use lexer::{Cursor, Token};
 
 mod arena;
@@ -11,8 +16,11 @@ mod lexer;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Builtin {
     Def,
+    Defn,
     Add,
     Sub,
+    Mul,
+    Div,
     Lambda,
     If,
     Lt,
@@ -29,6 +37,11 @@ enum Builtin {
     Eval,
     List,
     Cons,
+    Car,
+    Cdr,
+    First,
+    Second,
+    Third,
 }
 
 impl TryFrom<&str> for Builtin {
@@ -36,8 +49,11 @@ impl TryFrom<&str> for Builtin {
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let function = match value {
             "def" => Self::Def,
+            "defn" => Self::Defn,
             "+" => Self::Add,
             "-" => Self::Sub,
+            "*" => Self::Mul,
+            "/" => Self::Div,
             "fn" => Self::Lambda,
             "if" => Self::If,
             "<" => Self::Lt,
@@ -54,6 +70,11 @@ impl TryFrom<&str> for Builtin {
             "eval" => Self::Eval,
             "list" => Self::List,
             "cons" => Self::Cons,
+            "car" => Self::Car,
+            "cdr" => Self::Cdr,
+            "first" => Self::First,
+            "second" => Self::Second,
+            "third" => Self::Third,
             _ => return Err(Error::UnknownSymbol),
         };
         Ok(function)
@@ -65,22 +86,7 @@ enum Atom {
     Char(char),
     Int(i32),
     Builtin(Builtin),
-    Identifier(u8),
-}
-
-impl TryFrom<&str> for Atom {
-    type Error = Error;
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        if let Ok(n) = value.parse::<i32>() {
-            Ok(Self::Int(n))
-        } else if let Ok(builtin) = Builtin::try_from(value) {
-            Ok(Self::Builtin(builtin))
-        } else if let Some(id) = value.bytes().next() {
-            Ok(Self::Identifier(id))
-        } else {
-            Err(Error::SyntaxError("invalid atom"))
-        }
-    }
+    Identifier(u16),
 }
 
 pub trait EffectHandler: Write + Debug + Sized {}
@@ -88,6 +94,7 @@ pub trait EffectHandler: Write + Debug + Sized {}
 #[derive(Debug)]
 pub struct Runtime<E> {
     arena: Arena<Atom>,
+    symbols: Vec<String<10>, 100>,
     env: Pointer,
     handler: E,
 }
@@ -105,12 +112,15 @@ pub enum Error {
     UseAfterFree,
     Handler(fmt::Error),
     EndOfList,
+    SymbolTableFull,
+    InvalidSymbol,
 }
 
 impl<E: EffectHandler> Runtime<E> {
     pub fn new(handler: E) -> Self {
         Runtime {
             arena: Arena::new(),
+            symbols: Vec::new(),
             env: NIL,
             handler,
         }
@@ -159,7 +169,24 @@ impl<E: EffectHandler> Runtime<E> {
                 Ok(s)
             }
             Token::CloseDoubleQuote => Err(Error::EndOfList),
-            Token::Symbol(s) => self.alloc_inner(Object::Atom(s.try_into()?)),
+            Token::Symbol(s) => {
+                let atom = if let Ok(n) = s.parse::<i32>() {
+                    Atom::Int(n)
+                } else if let Ok(builtin) = Builtin::try_from(s) {
+                    Atom::Builtin(builtin)
+                } else {
+                    if let Some(idx) = self.symbols.iter().position(|symbol| symbol.as_str() == s) {
+                        Atom::Identifier(idx as u16)
+                    } else {
+                        let symbol = String::from_str(s).map_err(|_| Error::InvalidSymbol)?;
+                        self.symbols
+                            .push(symbol)
+                            .map_err(|_| Error::SymbolTableFull)?;
+                        Atom::Identifier(self.symbols.len() as u16 - 1)
+                    }
+                };
+                self.alloc_inner(Object::Atom(atom))
+            }
         }
     }
 
@@ -207,7 +234,7 @@ impl<E: EffectHandler> Runtime<E> {
         Ok(n)
     }
 
-    fn lookup(&mut self, env: Pointer, id: u8) -> Result<Option<Pointer>, Error> {
+    fn lookup(&mut self, env: Pointer, id: u16) -> Result<Option<Pointer>, Error> {
         if env == NIL {
             return Ok(None);
         }
@@ -238,7 +265,16 @@ impl<E: EffectHandler> Runtime<E> {
                 let value = self.eval(self.second(args)?, env)?;
                 let entry = self.cons(key, value)?;
                 self.env = self.cons(entry, self.env)?;
-                Ok(key)
+                Ok(NIL)
+            }
+            Defn => {
+                let key = self.first(args)?;
+                let params = self.second(args)?;
+                let body = self.third(args)?;
+                let function = self.cons(params, body)?;
+                let entry = self.cons(key, function)?;
+                self.env = self.cons(entry, self.env)?;
+                Ok(NIL)
             }
             Add => {
                 let mut sum = 0;
@@ -255,6 +291,22 @@ impl<E: EffectHandler> Runtime<E> {
                 let a = self.eval(self.first(args)?, env)?;
                 let b = self.eval(self.second(args)?, env)?;
                 self.int(self.deref_int(a)? - self.deref_int(b)?)
+            }
+            Mul => {
+                let mut product = 1;
+                let mut head = args;
+                while head != NIL {
+                    let (car, cdr) = self.split(head)?;
+                    let arg = self.eval(car, env)?;
+                    product *= self.deref_int(arg)?;
+                    head = cdr;
+                }
+                self.int(product)
+            }
+            Div => {
+                let a = self.eval(self.first(args)?, env)?;
+                let b = self.eval(self.second(args)?, env)?;
+                self.int(self.deref_int(a)? / self.deref_int(b)?)
             }
             Lambda => {
                 let params = self.first(args)?;
@@ -346,7 +398,7 @@ impl<E: EffectHandler> Runtime<E> {
                 }
             }
             Gc => {
-                self.arena.gc(env);
+                self.arena.gc(self.env);
                 Ok(NIL)
             }
             Env => Ok(self.env),
@@ -359,6 +411,26 @@ impl<E: EffectHandler> Runtime<E> {
                 let a = self.eval(self.first(args)?, env)?;
                 let b = self.eval(self.second(args)?, env)?;
                 self.cons(a, b)
+            }
+            Car => {
+                let list = self.eval(self.first(args)?, env)?;
+                self.car(list)
+            }
+            Cdr => {
+                let list = self.eval(self.first(args)?, env)?;
+                self.cdr(list)
+            }
+            First => {
+                let list = self.eval(self.first(args)?, env)?;
+                self.first(list)
+            }
+            Second => {
+                let list = self.eval(self.first(args)?, env)?;
+                self.second(list)
+            }
+            Third => {
+                let list = self.eval(self.first(args)?, env)?;
+                self.third(list)
             }
         }
     }
@@ -469,7 +541,13 @@ impl<E: EffectHandler> Runtime<E> {
             return self.pprint_str(form);
         }
         match self.deref_inner(form).unwrap() {
-            Object::Atom(a) => self.write(a),
+            Object::Atom(a) => match a {
+                Atom::Identifier(id) => {
+                    let symbol = self.symbols.get(id as usize).ok_or(Error::UnknownSymbol)?;
+                    write!(&mut self.handler, "{}", symbol).map_err(Error::Handler)
+                }
+                _ => self.write(a),
+            },
             Object::Cons(car, cdr) => {
                 self.write("(")?;
                 self.pprint(car)?;
@@ -501,7 +579,7 @@ impl fmt::Display for Atom {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Atom::Builtin(b) => write!(f, "{:?}", b),
-            Atom::Identifier(x) => write!(f, "{}", *x as char),
+            Atom::Identifier(x) => write!(f, "{}", x),
             Atom::Int(n) => write!(f, "{}", n),
             Atom::Char(c) => write!(f, "{}", c),
         }

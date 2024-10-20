@@ -47,10 +47,10 @@ impl<T: Copy + core::fmt::Debug> Arena<T> {
             Ok(Pointer(self.workspace.len() as u16 - 1))
         } else {
             match self.deref(self.free) {
-                Some(Object::Cons(_, cdr)) => {
+                Some(Object::Cons(car, cdr)) => {
                     self.workspace[self.free.0 as usize] = object;
                     self.free = cdr;
-                    Ok(self.free)
+                    Ok(car)
                 }
                 _ => panic!("free is not cons"),
             }
@@ -58,7 +58,7 @@ impl<T: Copy + core::fmt::Debug> Arena<T> {
     }
 
     fn mark(&mut self, ptr: Pointer) {
-        if self.marked[ptr.0 as usize] {
+        if ptr == NIL || self.marked[ptr.0 as usize] {
             return;
         }
         self.marked[ptr.0 as usize] = true;
@@ -73,8 +73,9 @@ impl<T: Copy + core::fmt::Debug> Arena<T> {
         self.mark(env);
         for idx in 0..self.workspace.len() {
             if !self.marked[idx] {
-                self.workspace[idx] = Object::Cons(NIL, self.free);
-                self.free = Pointer(idx as u16)
+                let freed = Pointer(idx as u16);
+                self.workspace[idx] = Object::Cons(freed, self.free);
+                self.free = freed;
             }
         }
     }
