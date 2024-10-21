@@ -1,7 +1,7 @@
 #![no_std]
 
 use core::{
-    fmt::{self, Debug, Write},
+    fmt::{self, Debug},
     str::FromStr,
 };
 
@@ -27,7 +27,6 @@ enum Builtin {
     Let,
     Map,
     Apply,
-    Print,
     Eq,
     And,
     Or,
@@ -61,7 +60,6 @@ impl TryFrom<&str> for Builtin {
             "let" => Self::Let,
             "map" => Self::Map,
             "apply" => Self::Apply,
-            "print" => Self::Print,
             "=" => Self::Eq,
             "and" => Self::And,
             "or" => Self::Or,
@@ -90,14 +88,11 @@ enum Atom {
     Identifier(u16),
 }
 
-pub trait EffectHandler: Write + Debug + Sized {}
-
 #[derive(Debug)]
-pub struct Runtime<E> {
+pub struct Runtime {
     arena: Arena<Atom>,
     symbols: Vec<String<10>, 100>,
     env: Pointer,
-    handler: E,
 }
 
 #[derive(Debug)]
@@ -117,13 +112,12 @@ pub enum Error {
     InvalidSymbol,
 }
 
-impl<E: EffectHandler> Runtime<E> {
-    pub fn new(handler: E) -> Self {
+impl Runtime {
+    pub fn new() -> Self {
         Runtime {
             arena: Arena::new(),
             symbols: Vec::new(),
             env: NIL,
-            handler,
         }
     }
 
@@ -235,7 +229,7 @@ impl<E: EffectHandler> Runtime<E> {
         Ok(n)
     }
 
-    fn lookup(&mut self, env: Pointer, id: u16) -> Result<Option<Pointer>, Error> {
+    fn lookup(&self, env: Pointer, id: u16) -> Result<Option<Pointer>, Error> {
         let mut head = env;
         while head != NIL {
             let (entry, rest) = self.split(head)?;
@@ -366,12 +360,6 @@ impl<E: EffectHandler> Runtime<E> {
                 let body = self.second(args)?;
                 self.eval(body, env)
             }
-            Print => {
-                let res = self.eval(self.first(args)?, env)?;
-                self.pprint(res)?;
-                self.write("\n")?;
-                Ok(NIL)
-            }
             Eq => {
                 let a = self.eval(self.first(args)?, env)?;
                 let b = self.eval(self.second(args)?, env)?;
@@ -499,12 +487,10 @@ impl<E: EffectHandler> Runtime<E> {
         }
     }
 
-    fn write(&mut self, s: impl fmt::Display) -> Result<(), Error> {
-        write!(&mut self.handler, "{}", s).map_err(Error::Handler)
+    fn write(writer: &mut impl fmt::Write, s: impl fmt::Display) -> Result<(), Error> {
+        write!(writer, "{}", s).map_err(Error::Handler)
     }
-}
 
-impl<E: EffectHandler> Runtime<E> {
     fn is_str(&self, pointer: Pointer) -> Result<bool, Error> {
         match self.deref_inner(pointer) {
             Ok(Object::Atom(_)) => Ok(false),
@@ -519,50 +505,50 @@ impl<E: EffectHandler> Runtime<E> {
         }
     }
 
-    fn pprint_str(&mut self, s: Pointer) -> Result<(), Error> {
+    fn pprint_str(&self, writer: &mut impl fmt::Write, s: Pointer) -> Result<(), Error> {
         let mut head = s;
         while head != NIL {
             let (first, rest) = self.split(head)?;
             let Object::Atom(Atom::Char(c)) = self.deref_inner(first)? else {
                 return Err(Error::TypeError("pprint_str expected string"));
             };
-            self.write(c)?;
+            Self::write(writer, c)?;
             head = rest;
         }
         Ok(())
     }
 
-    pub fn pprint(&mut self, form: Pointer) -> Result<(), Error> {
+    pub fn pprint(&self, writer: &mut impl fmt::Write, form: Pointer) -> Result<(), Error> {
         if form == NIL {
-            return self.write("nil");
+            return Self::write(writer, "nil");
         }
         if self.is_str(form)? {
-            return self.pprint_str(form);
+            return self.pprint_str(writer, form);
         }
         match self.deref_inner(form).unwrap() {
             Object::Atom(a) => match a {
                 Atom::Identifier(id) => {
                     let symbol = self.symbols.get(id as usize).ok_or(Error::UnknownSymbol)?;
-                    write!(&mut self.handler, "{}", symbol).map_err(Error::Handler)
+                    write!(writer, "{}", symbol).map_err(Error::Handler)
                 }
-                _ => self.write(a),
+                _ => Self::write(writer, a),
             },
             Object::Cons(car, cdr) => {
-                self.write("(")?;
-                self.pprint(car)?;
+                Self::write(writer, "(")?;
+                self.pprint(writer, car)?;
                 let mut head = cdr;
                 while head != NIL {
-                    self.write(" ")?;
+                    Self::write(writer, " ")?;
                     if let Ok((car, cdr)) = self.split(head) {
-                        self.pprint(car)?;
+                        self.pprint(writer, car)?;
                         head = cdr;
                     } else {
-                        self.write(". ")?;
-                        self.pprint(head)?;
+                        Self::write(writer, ". ")?;
+                        self.pprint(writer, head)?;
                         head = NIL;
                     }
                 }
-                self.write(")")
+                Self::write(writer, ")")
             }
         }
     }
@@ -585,8 +571,20 @@ impl fmt::Display for Atom {
     }
 }
 
-impl<E: EffectHandler> fmt::Display for Runtime<E> {
+impl fmt::Display for Runtime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "==== ENV ====")?;
+        let mut head = self.env;
+        while head != NIL {
+            let (entry, tail) = self.split(head).expect("invalid env entry");
+            let (key, value) = self.split(entry).expect("invalid env entry");
+            self.pprint(f, key).expect("writing key");
+            write!(f, ": ")?;
+            self.pprint(f, value).expect("writing value");
+            writeln!(f)?;
+            head = tail;
+        }
+        writeln!(f, "==== ARENA ====")?;
         write!(f, "{}", self.arena)
     }
 }
@@ -594,38 +592,7 @@ impl<E: EffectHandler> fmt::Display for Runtime<E> {
 #[cfg(test)]
 mod tests {
     extern crate std;
-    use std::string::String;
-    use std::string::ToString;
-    use std::vec::Vec;
-
     use super::*;
-
-    #[derive(Debug)]
-    struct TestEffectHandler {
-        printed: Vec<String>,
-    }
-
-    impl TestEffectHandler {
-        fn new() -> Self {
-            Self {
-                printed: Vec::new(),
-            }
-        }
-    }
-
-    impl Write for TestEffectHandler {
-        fn write_str(&mut self, s: &str) -> fmt::Result {
-            self.printed.push(s.to_string());
-            Ok(())
-        }
-    }
-
-    impl EffectHandler for TestEffectHandler {}
-
-    fn new_runtime() -> Runtime<TestEffectHandler> {
-        let handler = TestEffectHandler::new();
-        Runtime::new(handler)
-    }
 
     #[test]
     fn test_lexer() {
@@ -662,7 +629,7 @@ mod tests {
     }
 
     fn assert_int(form: &str, expected: i32) {
-        let mut runtime = new_runtime();
+        let mut runtime = Runtime::new();
         let res = runtime.eval_str(form).unwrap();
         let res = runtime.deref_inner(res).unwrap();
         assert_eq!(res, Object::Atom(Atom::Int(expected)));
@@ -696,7 +663,7 @@ mod tests {
 
     #[test]
     fn test_def() {
-        let mut runtime = new_runtime();
+        let mut runtime = Runtime::new();
         let _ = runtime.eval_str("(def x 2)").unwrap();
         let res = runtime.eval_str("(+ x 1)").unwrap();
         let res = runtime.deref_inner(res).unwrap();
@@ -705,7 +672,7 @@ mod tests {
 
     #[test]
     fn test_fib() {
-        let mut runtime = new_runtime();
+        let mut runtime = Runtime::new();
         let _ = runtime
             .eval_str("(def fib (fn (n) (if (< n 3) 1 (+ (fib (- n 1)) (fib (- n 2))))))")
             .unwrap();
@@ -716,7 +683,7 @@ mod tests {
 
     #[test]
     fn test_tco() {
-        let mut runtime = new_runtime();
+        let mut runtime = Runtime::new();
         let _ = runtime
             .eval_str("(def f (fn (n) (if (< n 3) 1 (f (- n 1)))))")
             .unwrap();
@@ -727,7 +694,7 @@ mod tests {
 
     #[test]
     fn test_do() {
-        let mut runtime = new_runtime();
+        let mut runtime = Runtime::new();
         let _ = runtime.eval_str("(def x 0)").unwrap();
         let _ = runtime.eval_str("(do 5 (def x (+ x 1)))").unwrap();
         let res = runtime.eval_str("x").unwrap();

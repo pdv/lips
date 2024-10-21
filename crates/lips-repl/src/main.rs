@@ -1,25 +1,12 @@
-use std::borrow::Cow;
 use std::error::Error;
+use std::{borrow::Cow, io::stdout};
 
 use nu_ansi_term::{Color, Style};
 use reedline::{
     Highlighter, Prompt, PromptEditMode, PromptHistorySearch, Reedline, Signal, StyledText,
 };
 
-use lips_lang::{EffectHandler, Runtime};
-
-#[derive(Debug)]
-
-struct StdEffectHandler {}
-
-impl core::fmt::Write for StdEffectHandler {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        print!("{}", s);
-        Ok(())
-    }
-}
-
-impl EffectHandler for StdEffectHandler {}
+use lips_lang::Runtime;
 
 struct SyntaxHighlighter {}
 
@@ -106,8 +93,7 @@ impl Prompt for MyPrompt {
 fn main() -> Result<(), Box<dyn Error>> {
     let mut rl = Reedline::create().with_highlighter(Box::new(SyntaxHighlighter {}));
     let prompt = MyPrompt {};
-    let handler = StdEffectHandler {};
-    let mut runtime = Runtime::new(handler);
+    let mut runtime = Runtime::new();
     loop {
         let Signal::Success(readline) = rl.read_line(&prompt)? else {
             panic!("readline failure")
@@ -116,10 +102,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             print!("{}", runtime);
             continue;
         }
+        let mut result = String::new();
         match runtime.eval_str(&readline) {
-            Ok(res) => runtime.pprint(res).unwrap(),
+            Ok(res) => runtime.pprint(&mut result, res).unwrap(),
             Err(e) => print!("Error: {:?}", e),
         }
-        println!();
+        println!("{}", result);
     }
 }

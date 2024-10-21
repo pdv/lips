@@ -12,19 +12,7 @@ use microbit::{
 use panic_rtt_target as _;
 use rtt_target::{rprintln, rtt_init_print};
 
-use lips_lang::{self, EffectHandler, Runtime};
-
-#[derive(Debug)]
-struct MicrobitEffectHandler {}
-
-impl core::fmt::Write for MicrobitEffectHandler {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        rprintln!("{}", s);
-        Ok(())
-    }
-}
-
-impl EffectHandler for MicrobitEffectHandler {}
+use lips_lang::{self, Runtime};
 
 #[cortex_m_rt::entry]
 fn main() -> ! {
@@ -37,12 +25,11 @@ fn main() -> ! {
         Parity::EXCLUDED,
         Baudrate::BAUD115200,
     );
-    let handler = MicrobitEffectHandler {};
 
     writeln!(serial, "\r\n\nWelcome v3").unwrap();
     write!(serial, "\r> ").unwrap();
 
-    let mut runtime = Runtime::new(handler);
+    let mut runtime = Runtime::new();
     let mut input = String::<100>::new();
 
     let mut rx_buffer: [u8; 1] = [0];
@@ -55,7 +42,7 @@ fn main() -> ! {
                 match runtime.eval_str(input.as_str()) {
                     Ok(obj) => {
                         write!(serial, "\r").unwrap();
-                        runtime.pprint(obj).unwrap();
+                        runtime.pprint(&mut serial, obj).unwrap();
                         writeln!(serial, "\r").unwrap();
                     }
                     Err(e) => writeln!(serial, "\rError: {:?}", e).unwrap(),

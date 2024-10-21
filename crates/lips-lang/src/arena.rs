@@ -19,6 +19,7 @@ pub struct Arena<T> {
     workspace: Vec<Object<T>, WORKSPACE_SIZE>,
     marked: [bool; WORKSPACE_SIZE],
     free: Pointer,
+    obj_count: usize,
 }
 
 #[derive(Debug)]
@@ -32,6 +33,7 @@ impl<T: Copy + core::fmt::Debug> Arena<T> {
             workspace: Vec::new(),
             marked: [false; WORKSPACE_SIZE],
             free: NIL,
+            obj_count: 0,
         }
     }
 
@@ -40,6 +42,7 @@ impl<T: Copy + core::fmt::Debug> Arena<T> {
     }
 
     pub fn alloc(&mut self, object: Object<T>) -> Result<Pointer, Error> {
+        self.obj_count += 1;
         if self.free == NIL {
             self.workspace
                 .push(object)
@@ -73,6 +76,7 @@ impl<T: Copy + core::fmt::Debug> Arena<T> {
         self.mark(env);
         for idx in 0..self.workspace.len() {
             if !self.marked[idx] {
+                self.obj_count -= 1;
                 let freed = Pointer(idx as u16);
                 self.workspace[idx] = Object::Cons(freed, self.free);
                 self.free = freed;
@@ -102,8 +106,16 @@ impl<T: core::fmt::Display> core::fmt::Display for Object<T> {
 
 impl<T: core::fmt::Display> core::fmt::Display for Arena<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        writeln!(f, "{}/{}", self.obj_count, WORKSPACE_SIZE)?;
         for (idx, obj) in self.workspace.iter().enumerate() {
-            writeln!(f, "{}: {}", idx, obj)?;
+            match obj {
+                Object::Cons(car, _) if car.0 == idx as u16 => {
+                    continue;
+                }
+                _ => {
+                    writeln!(f, "{}: {}", idx, obj)?;
+                }
+            }
         }
         Ok(())
     }
