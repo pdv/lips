@@ -271,7 +271,7 @@ impl<E: EffectHandler> Runtime<E> {
             Defn => {
                 let key = self.first(args)?;
                 let params = self.second(args)?;
-                let body = self.third(args)?;
+                let body = self.cons(self.third(args)?, NIL)?;
                 let function = self.cons(params, body)?;
                 let entry = self.cons(key, function)?;
                 self.env = self.cons(entry, self.env)?;
@@ -311,7 +311,7 @@ impl<E: EffectHandler> Runtime<E> {
             }
             Lambda => {
                 let params = self.first(args)?;
-                let body = self.second(args)?;
+                let body = self.cons(self.second(args)?, NIL)?;
                 self.cons(params, body)
             }
             If => {
@@ -333,7 +333,7 @@ impl<E: EffectHandler> Runtime<E> {
             }
             Do => {
                 let times = self.eval(self.first(args)?, env)?;
-                let body = self.second(args)?;
+                let body = self.cons(self.second(args)?, NIL)?;
                 let function = self.cons(NIL, body)?;
                 let mut res = NIL;
                 for _ in 0..self.deref_int(times)? {
@@ -470,6 +470,7 @@ impl<E: EffectHandler> Runtime<E> {
                     params = self.cdr(params)?;
                     args = self.cdr(args)?;
                 }
+                let body = self.car(body)?;
                 self.eval(body, env)
             }
             _ => Err(Error::TypeError("not a function")),
