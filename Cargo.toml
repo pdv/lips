@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "crates/lips-lang",
-    "crates/lips-embedded"
-, "crates/lips-repl"]
+    "crates/lips-embedded",
+    "crates/lips-repl",
+    "crates/lips-stm",
+]
 resolver = "2"

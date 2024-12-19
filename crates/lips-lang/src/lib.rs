@@ -222,7 +222,7 @@ impl Runtime {
         self.car(self.cdr(self.cdr(pointer)?)?)
     }
 
-    fn deref_int(&self, pointer: Pointer) -> Result<i32, Error> {
+    pub fn deref_int(&self, pointer: Pointer) -> Result<i32, Error> {
         let Object::Atom(Atom::Int(n)) = self.deref_inner(pointer)? else {
             return Err(Error::TypeError("expected int"));
         };

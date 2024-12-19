@@ -1,10 +1,17 @@
 [alias]
-r = "run -p lips-embedded --target thumbv7em-none-eabihf"
+microbit = "run -p lips-embedded --target thumbv7em-none-eabihf"
+stm = "run -p lips-stm --target thumbv7em-none-eabi"
 t = "test -p lips-lang"
 repl = "run -p lips-repl"
+
+[target.thumbv7em-none-eabi]
+runner = "probe-rs run --chip STM32L476RGTx"
 
 [target.thumbv7em-none-eabihf]
 rustflags = [
     "-C", "link-arg=-Tlink.x",
 ]
 runner = "probe-rs run --chip nrf52833_xxAA --probe 0d28:0204"
+
+[env]
+DEFMT_LOG = "trace"
