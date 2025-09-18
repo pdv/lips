@@ -1,5 +1,5 @@
 use std::error::Error;
-use std::{borrow::Cow, io::stdout};
+use std::borrow::Cow;
 
 use nu_ansi_term::{Color, Style};
 use reedline::{
@@ -93,7 +93,7 @@ impl Prompt for MyPrompt {
 fn main() -> Result<(), Box<dyn Error>> {
     let mut rl = Reedline::create().with_highlighter(Box::new(SyntaxHighlighter {}));
     let prompt = MyPrompt {};
-    let mut runtime = Runtime::new();
+    let mut runtime = Runtime::default();
     loop {
         let Signal::Success(readline) = rl.read_line(&prompt)? else {
             panic!("readline failure")

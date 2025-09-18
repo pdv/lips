@@ -1,4 +1,4 @@
-use core::{fmt::Formatter, u16};
+use core::fmt::Formatter;
 use heapless::Vec;
 
 const WORKSPACE_SIZE: usize = 1000;

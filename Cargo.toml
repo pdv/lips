@@ -3,6 +3,6 @@ members = [
     "crates/lips-lang",
     "crates/lips-embedded",
     "crates/lips-repl",
-    "crates/lips-stm",
+    "crates/lips-stm", "crates/lips-lang-2",
 ]
 resolver = "2"
