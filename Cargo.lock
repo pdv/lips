@@ -441,7 +441,7 @@ dependencies = [
  "defmt",
  "embedded-io-async",
  "futures-util",
- "heapless 0.8.0",
+ "heapless",
 ]
 
 [[package]]
@@ -456,7 +456,7 @@ dependencies = [
  "embedded-io-async",
  "futures-sink",
  "futures-util",
- "heapless 0.8.0",
+ "heapless",
 ]
 
 [[package]]
@@ -475,7 +475,7 @@ dependencies = [
  "embedded-hal 1.0.0",
  "embedded-hal-async",
  "futures-util",
- "heapless 0.8.0",
+ "heapless",
 ]
 
 [[package]]
@@ -733,16 +733,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "heapless"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1edcd5a338e64688fbdcb7531a846cfd3476a54784dcb918a0844682bc7ada5"
-dependencies = [
- "hash32",
- "stable_deref_trait",
-]
-
-[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -821,7 +811,7 @@ dependencies = [
  "cortex-m-rt",
  "embedded-hal 1.0.0",
  "embedded-io",
- "heapless 0.8.0",
+ "heapless",
  "lips-lang",
  "microbit-v2",
  "nb 1.1.0",
@@ -833,14 +823,14 @@ dependencies = [
 name = "lips-lang"
 version = "0.1.0"
 dependencies = [
- "heapless 0.8.0",
+ "heapless",
 ]
 
 [[package]]
 name = "lips-lang-2"
 version = "0.1.0"
 dependencies = [
- "heapless 0.9.1",
+ "heapless",
 ]
 
 [[package]]
@@ -873,7 +863,7 @@ dependencies = [
  "embedded-hal-bus",
  "embedded-io",
  "embedded-io-async",
- "heapless 0.8.0",
+ "heapless",
  "lips-lang",
  "micromath",
  "panic-probe",
@@ -1488,7 +1478,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "98816b1accafbb09085168b90f27e93d790b4bfa19d883466b5e53315b5f06a6"
 dependencies = [
- "heapless 0.8.0",
+ "heapless",
  "portable-atomic",
 ]
 

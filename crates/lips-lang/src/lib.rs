@@ -114,15 +114,19 @@ pub enum Error {
 
 impl Default for Runtime {
     fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Runtime {
+    fn new() -> Self {
         Runtime {
             arena: Arena::new(),
             symbols: Vec::new(),
             env: NIL,
         }
     }
-}
 
-impl Runtime {
     fn alloc_inner(&mut self, object: Object<Atom>) -> Result<Pointer, Error> {
         self.arena.alloc(object).map_err(Error::Arena)
     }

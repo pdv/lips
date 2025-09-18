@@ -86,7 +86,7 @@ impl Arena {
                 generation: 1,
                 index: self.slots.len() as u16 - 1,
             })
-        } else if let Some(free_slot) = self.slots.get_mut(self.free.index) {
+        } else if let Some(free_slot) = self.slots.get_mut(self.free.index as usize) {
             let index = self.free.index;
             self.free = free_slot.value.cdr()?;
             free_slot.value = value;
@@ -110,14 +110,29 @@ impl Arena {
     }
 
     fn mark(&mut self, root: Handle) -> Result<()> {
-        let slot = self
-            .slots
-            .get_mut(root.index as usize)
-            .ok_or(Error::InvalidHandle)?;
-        slot.marked = true;
-        if let Cons(car, cdr) = slot.value {
-            self.mark(*car)?;
-            self.mark(*cdr)?;
+        let mut worklist: Vec<Handle, 100> = Vec::new();
+        worklist.push(root).map_err(|_| Error::OutOfMemory)?;
+
+        while let Some(handle) = worklist.pop() {
+            let slot = self
+                .slots
+                .get_mut(handle.index as usize)
+                .ok_or(Error::InvalidHandle)?;
+
+            if slot.marked {
+                continue;
+            }
+
+            slot.marked = true;
+
+            if let Cons(car, cdr) = slot.value {
+                if car != NIL {
+                    worklist.push(car).map_err(|_| Error::OutOfMemory)?;
+                }
+                if cdr != NIL {
+                    worklist.push(cdr).map_err(|_| Error::OutOfMemory)?;
+                }
+            }
         }
         Ok(())
     }
@@ -133,5 +148,104 @@ impl Arena {
             }
             slot.marked = false;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_alloc_and_get() {
+        let mut arena = Arena::new();
+        let h1 = arena.alloc(Value::Int(10)).unwrap();
+        let h2 = arena.alloc(Value::Char('a')).unwrap();
+
+        match arena.get(h1) {
+            Some(Value::Int(10)) => (),
+            _ => panic!("test_alloc_and_get failed: h1"),
+        }
+
+        match arena.get(h2) {
+            Some(Value::Char('a')) => (),
+            _ => panic!("test_alloc_and_get failed: h2"),
+        }
+    }
+
+    #[test]
+    fn test_out_of_memory() {
+        let mut arena = Arena::new();
+        for _ in 0..100 {
+            arena.alloc(Value::Int(0)).unwrap();
+        }
+        match arena.alloc(Value::Int(0)) {
+            Err(Error::OutOfMemory) => (),
+            _ => panic!("test_out_of_memory failed"),
+        }
+    }
+
+    #[test]
+    fn test_gc_simple() {
+        let mut arena = Arena::new();
+        let _h1 = arena.alloc(Value::Int(10)).unwrap();
+        let root = arena.alloc(Value::Int(20)).unwrap();
+
+        // Mark and sweep
+        arena.mark(root).unwrap();
+        arena.sweep();
+
+        // After GC, the slot for h1 should be on the free list.
+        // The free list head should point to index 0 (h1's slot).
+        assert_eq!(arena.free.index, 0);
+
+        // Allocate again, it should reuse the slot from h1.
+        let h3 = arena.alloc(Value::Int(30)).unwrap();
+        assert_eq!(h3.index, 0);
+
+        // The generation should be incremented.
+        assert_eq!(h3.generation, 2);
+    }
+
+    #[test]
+    fn test_gc_list() {
+        let mut arena = Arena::new();
+        let h1 = arena.alloc(Value::Int(10)).unwrap();
+        let h2 = arena.alloc(Value::Cons(h1, NIL)).unwrap();
+        let root = arena.alloc(Value::Cons(h2, NIL)).unwrap();
+
+        // Mark and sweep with root.
+        arena.mark(root).unwrap();
+        arena.sweep();
+
+        // Nothing should be on the free list.
+        assert_eq!(arena.free, NIL);
+
+        // Get all values
+        assert!(arena.get(h1).is_some());
+        assert!(arena.get(h2).is_some());
+        assert!(arena.get(root).is_some());
+    }
+
+    #[test]
+    fn test_gc_reclaims_unreachable() {
+        let mut arena = Arena::new();
+        let h1 = arena.alloc(Value::Int(10)).unwrap();
+        let h2 = arena.alloc(Value::Cons(h1, NIL)).unwrap();
+        let root = arena.alloc(Value::Cons(h2, NIL)).unwrap();
+
+        // now, let's make h1 and h2 unreachable by only marking root's cdr (which is NIL)
+        // but we will only mark root
+        let dead_root = arena.alloc(Value::Int(100)).unwrap();
+
+        arena.mark(root).unwrap();
+        arena.sweep();
+
+        // The slot for dead_root should be on the free list.
+        assert_eq!(arena.free.index, dead_root.index);
+
+        // The other handles should still be valid.
+        assert!(arena.get(h1).is_some());
+        assert!(arena.get(h2).is_some());
+        assert!(arena.get(root).is_some());
     }
 }
