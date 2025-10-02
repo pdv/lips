@@ -3,62 +3,100 @@ use heapless::Vec;
 
 const WORKSPACE_SIZE: usize = 1000;
 
+// Bit layout for Object (u32):
+// Bit 31:    Mark bit (GC)
+// Bits 30-3: Payload (28 bits)
+// Bits 2-0:  Type tag (3 bits)
+
+const MARK_BIT: u32 = 1 << 31;
+const TAG_MASK: u32 = 0x7;
+const PAYLOAD_SHIFT: u32 = 3;
+
+const TAG_CONS: u32 = 0;
+const TAG_INT: u32 = 1;
+const TAG_SYMBOL: u32 = 2;
+const TAG_BUILTIN: u32 = 3;
+const TAG_CHAR: u32 = 4;
+
+// For cons cells: 14-bit car (bits 16-3) + 14-bit cdr (bits 30-17)
+const PTR_MASK: u32 = 0x3FFF;
+const CAR_SHIFT: u32 = 3;
+const CDR_SHIFT: u32 = 17;
+
+const NIL_PTR: u16 = 0x3FFF; // Max 14-bit value
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pointer(u16);
 
-pub const NIL: Pointer = Pointer(0xFEFF);
-
-const MARKER_INT: u16 = 0xFF00;
-const MARKER_CHAR: u16 = 0xFF01;
-const MARKER_SYMBOL: u16 = 0xFF02;
-const MARKER_BUILTIN: u16 = 0xFF03;
+pub const NIL: Pointer = Pointer(NIL_PTR);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Object(u16, u16);
+pub struct Object(u32);
 
 impl Object {
     // Constructors
     pub fn cons(car: Pointer, cdr: Pointer) -> Self {
-        Object(car.0, cdr.0)
+        let payload = ((cdr.0 as u32) << CDR_SHIFT) | ((car.0 as u32) << CAR_SHIFT);
+        Object(payload | TAG_CONS)
     }
 
-    pub fn int(value: i16) -> Self {
-        Object(MARKER_INT, value as u16)
+    pub fn int(value: i32) -> Self {
+        Object((((value << PAYLOAD_SHIFT) as u32) & !MARK_BIT) | TAG_INT)
     }
 
     pub fn symbol(index: u16) -> Self {
-        Object(MARKER_SYMBOL, index)
+        Object(((index as u32) << PAYLOAD_SHIFT) | TAG_SYMBOL)
     }
 
     pub fn builtin(id: u8) -> Self {
-        Object(MARKER_BUILTIN, id as u16)
+        Object(((id as u32) << PAYLOAD_SHIFT) | TAG_BUILTIN)
     }
 
     pub fn char(ch: char) -> Self {
-        Object(MARKER_CHAR, ch as u16)
+        Object(((ch as u32) << PAYLOAD_SHIFT) | TAG_CHAR)
     }
 
     // Type checking
+    fn tag(&self) -> u32 {
+        self.0 & TAG_MASK
+    }
+
     pub fn is_atom(&self) -> bool {
-        self.0 >= MARKER_INT
+        self.tag() != TAG_CONS
     }
 
     pub fn is_cons(&self) -> bool {
-        !self.is_atom()
+        self.tag() == TAG_CONS
     }
 
     pub fn is_int(&self) -> bool {
-        self.0 == MARKER_INT
+        self.tag() == TAG_INT
     }
 
     pub fn is_symbol(&self) -> bool {
-        self.0 == MARKER_SYMBOL
+        self.tag() == TAG_SYMBOL
+    }
+
+    // Mark bit operations
+    pub fn is_marked(&self) -> bool {
+        (self.0 & MARK_BIT) != 0
+    }
+
+    pub fn mark(&mut self) {
+        self.0 |= MARK_BIT;
+    }
+
+    pub fn unmark(&mut self) {
+        self.0 &= !MARK_BIT;
     }
 
     // Decoders
     pub fn as_cons(&self) -> Option<(Pointer, Pointer)> {
         if self.is_cons() {
-            Some((Pointer(self.0), Pointer(self.1)))
+            let val = self.0 & !MARK_BIT;
+            let car = Pointer(((val >> CAR_SHIFT) & PTR_MASK) as u16);
+            let cdr = Pointer(((val >> CDR_SHIFT) & PTR_MASK) as u16);
+            Some((car, cdr))
         } else {
             None
         }
@@ -66,7 +104,10 @@ impl Object {
 
     pub fn as_int(&self) -> Option<i32> {
         if self.is_int() {
-            Some(self.1 as i16 as i32)
+            // Mask mark bit, shift left to move bit 30->31, then arithmetic shift right
+            // This sign-extends from bit 30 (the actual sign bit of our 28-bit value)
+            let val = (self.0 & !MARK_BIT) as i32;
+            Some((val << 1) >> (PAYLOAD_SHIFT + 1))
         } else {
             None
         }
@@ -74,23 +115,23 @@ impl Object {
 
     pub fn as_symbol(&self) -> Option<u16> {
         if self.is_symbol() {
-            Some(self.1)
+            Some(((self.0 & !MARK_BIT) >> PAYLOAD_SHIFT) as u16)
         } else {
             None
         }
     }
 
     pub fn as_builtin(&self) -> Option<u8> {
-        if self.0 == MARKER_BUILTIN {
-            Some(self.1 as u8)
+        if self.tag() == TAG_BUILTIN {
+            Some(((self.0 & !MARK_BIT) >> PAYLOAD_SHIFT) as u8)
         } else {
             None
         }
     }
 
     pub fn as_char(&self) -> Option<char> {
-        if self.0 == MARKER_CHAR {
-            char::from_u32(self.1 as u32)
+        if self.tag() == TAG_CHAR {
+            char::from_u32((self.0 & !MARK_BIT) >> PAYLOAD_SHIFT)
         } else {
             None
         }
@@ -100,7 +141,6 @@ impl Object {
 #[derive(Debug)]
 pub struct Arena {
     workspace: Vec<Object, WORKSPACE_SIZE>,
-    marked: [bool; WORKSPACE_SIZE],
     free: Pointer,
     obj_count: usize,
 }
@@ -114,7 +154,6 @@ impl Arena {
     pub fn new() -> Self {
         Self {
             workspace: Vec::new(),
-            marked: [false; WORKSPACE_SIZE],
             free: NIL,
             obj_count: 0,
         }
@@ -151,23 +190,26 @@ impl Arena {
             return;
         }
         let idx = ptr.0 as usize;
-        if idx >= self.workspace.len() || self.marked[idx] {
+        if idx >= self.workspace.len() {
             return;
         }
-        self.marked[idx] = true;
-        if let Some(cell) = self.deref(ptr) {
-            if let Some((car, cdr)) = cell.as_cons() {
-                self.mark(car);
-                self.mark(cdr);
-            }
+        if self.workspace[idx].is_marked() {
+            return;
+        }
+        self.workspace[idx].mark();
+        if let Some((car, cdr)) = self.workspace[idx].as_cons() {
+            self.mark(car);
+            self.mark(cdr);
         }
     }
 
     pub fn gc(&mut self, env: Pointer) {
-        self.marked.fill(false);
+        for obj in self.workspace.iter_mut() {
+            obj.unmark();
+        }
         self.mark(env);
         for idx in 0..self.workspace.len() {
-            if !self.marked[idx] {
+            if !self.workspace[idx].is_marked() {
                 self.obj_count -= 1;
                 let freed = Pointer(idx as u16);
                 self.workspace[idx] = Object::cons(freed, self.free);
@@ -244,6 +286,13 @@ mod tests {
 
         let cell = Object::int(-42);
         assert_eq!(cell.as_int().unwrap(), -42);
+
+        // Test larger values (28-bit)
+        let cell = Object::int(1_000_000);
+        assert_eq!(cell.as_int().unwrap(), 1_000_000);
+
+        let cell = Object::int(-1_000_000);
+        assert_eq!(cell.as_int().unwrap(), -1_000_000);
     }
 
     #[test]
@@ -276,5 +325,19 @@ mod tests {
 
         let cell = Object::char('A');
         assert_eq!(cell.as_char().unwrap(), 'A');
+    }
+
+    #[test]
+    fn test_mark_bit() {
+        let mut cell = Object::int(42);
+        assert!(!cell.is_marked());
+
+        cell.mark();
+        assert!(cell.is_marked());
+        assert_eq!(cell.as_int().unwrap(), 42); // Value unchanged
+
+        cell.unmark();
+        assert!(!cell.is_marked());
+        assert_eq!(cell.as_int().unwrap(), 42);
     }
 }

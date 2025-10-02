@@ -215,7 +215,7 @@ impl Runtime {
                     return Ok(NIL);
                 }
 
-                let cell = if let Ok(n) = s.parse::<i16>() {
+                let cell = if let Ok(n) = s.parse::<i32>() {
                     Object::int(n)
                 } else if let Ok(builtin) = Builtin::try_from(s) {
                     Object::builtin(builtin.to_u8())
@@ -253,7 +253,7 @@ impl Runtime {
         }
     }
 
-    fn int(&mut self, n: i16) -> Result<Pointer, Error> {
+    fn int(&mut self, n: i32) -> Result<Pointer, Error> {
         self.alloc(Object::int(n))
     }
 
@@ -289,10 +289,9 @@ impl Runtime {
         self.car(self.cdr(self.cdr(pointer)?)?)
     }
 
-    pub fn deref_int(&self, pointer: Pointer) -> Result<i16, Error> {
+    pub fn deref_int(&self, pointer: Pointer) -> Result<i32, Error> {
         let cell = self.deref(pointer)?;
         cell.as_int()
-            .and_then(|n| n.try_into().ok())
             .ok_or(Error::TypeError("expected int"))
     }
 
@@ -342,7 +341,7 @@ impl Runtime {
                 Ok(NIL)
             }
             Add => {
-                let mut sum: i16 = 0;
+                let mut sum: i32 = 0;
                 let mut head = args;
                 while head != NIL {
                     let (car, cdr) = self.split(head)?;
@@ -358,7 +357,7 @@ impl Runtime {
                 self.int(self.deref_int(a)?.wrapping_sub(self.deref_int(b)?))
             }
             Mul => {
-                let mut product: i16 = 1;
+                let mut product: i32 = 1;
                 let mut head = args;
                 while head != NIL {
                     let (car, cdr) = self.split(head)?;
@@ -758,7 +757,7 @@ mod tests {
         }
     }
 
-    fn assert_int(form: &str, expected: i16) {
+    fn assert_int(form: &str, expected: i32) {
         let mut runtime = Runtime::new();
         let res = runtime.eval_str(form).unwrap();
         let actual = runtime.deref_int(res).unwrap();
