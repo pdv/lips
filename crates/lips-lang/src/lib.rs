@@ -39,6 +39,7 @@ enum Builtin {
     First = 24,
     Second = 25,
     Third = 26,
+    Nil = 27,
 }
 
 impl Builtin {
@@ -71,6 +72,7 @@ impl Builtin {
             24 => Some(Self::First),
             25 => Some(Self::Second),
             26 => Some(Self::Third),
+            27 => Some(Self::Nil),
             _ => None,
         }
     }
@@ -111,6 +113,7 @@ impl TryFrom<&str> for Builtin {
             "first" => Self::First,
             "second" => Self::Second,
             "third" => Self::Third,
+            "nil" => Self::Nil,
             _ => return Err(Error::UnknownSymbol),
         };
         Ok(function)
@@ -202,12 +205,15 @@ impl Runtime {
             }
             Token::CloseDoubleQuote => Err(Error::EndOfList),
             Token::Symbol(s) => {
+                if s == "nil" {
+                    return Ok(NIL);
+                }
+
                 let cell = if let Ok(n) = s.parse::<i32>() {
                     Cell::int(n)
                 } else if let Ok(builtin) = Builtin::try_from(s) {
                     Cell::builtin(builtin.to_u8())
                 } else {
-                    // Search for existing symbol by iterating through symbol_offsets
                     let buffer_bytes = self.symbol_buffer.as_bytes();
                     for (symbol_id, &offset) in self.symbol_offsets.iter().enumerate() {
                         let start = offset as usize;
@@ -222,12 +228,18 @@ impl Runtime {
                         }
                     }
 
-                    // Symbol not found, add it
+                    // Symbol not found
                     let new_offset = self.symbol_buffer.len() as u16;
                     let symbol_id = self.symbol_offsets.len() as u16;
-                    self.symbol_buffer.push_str(s).map_err(|_| Error::SymbolTableFull)?;
-                    self.symbol_buffer.push('\0').map_err(|_| Error::SymbolTableFull)?;
-                    self.symbol_offsets.push(new_offset).map_err(|_| Error::SymbolTableFull)?;
+                    self.symbol_buffer
+                        .push_str(s)
+                        .map_err(|_| Error::SymbolTableFull)?;
+                    self.symbol_buffer
+                        .push('\0')
+                        .map_err(|_| Error::SymbolTableFull)?;
+                    self.symbol_offsets
+                        .push(new_offset)
+                        .map_err(|_| Error::SymbolTableFull)?;
                     Cell::symbol(symbol_id)
                 };
                 self.alloc(cell)
@@ -245,7 +257,8 @@ impl Runtime {
 
     fn split(&self, pointer: Pointer) -> Result<(Pointer, Pointer), Error> {
         let cell = self.deref(pointer)?;
-        cell.as_cons().ok_or(Error::TypeError("trying to split atom"))
+        cell.as_cons()
+            .ok_or(Error::TypeError("trying to split atom"))
     }
 
     fn car(&self, pointer: Pointer) -> Result<Pointer, Error> {
@@ -474,6 +487,7 @@ impl Runtime {
                 let list = self.eval(self.first(args)?, env)?;
                 self.third(list)
             }
+            Nil => Ok(NIL),
         }
     }
 
@@ -491,7 +505,8 @@ impl Runtime {
     fn apply(&mut self, function: Pointer, args: Pointer, env: Pointer) -> Result<Pointer, Error> {
         let cell = self.deref(function)?;
         if let Some(builtin_id) = cell.as_builtin() {
-            let builtin = Builtin::from_u8(builtin_id).ok_or(Error::TypeError("invalid builtin"))?;
+            let builtin =
+                Builtin::from_u8(builtin_id).ok_or(Error::TypeError("invalid builtin"))?;
             self.builtin(builtin, args, env)
         } else if let Some((params, body)) = cell.as_cons() {
             let mut env = env;
@@ -516,6 +531,10 @@ impl Runtime {
     }
 
     fn eval(&mut self, form: Pointer, env: Pointer) -> Result<Pointer, Error> {
+        if form == NIL {
+            return Ok(NIL);
+        }
+
         let cell = self.deref(form)?;
         if let Some(id) = cell.as_symbol() {
             self.lookup(env, id)?
@@ -562,7 +581,9 @@ impl Runtime {
         while head != NIL {
             let (first, rest) = self.split(head)?;
             let cell = self.deref(first)?;
-            let c = cell.as_char().ok_or(Error::TypeError("pprint_str expected string"))?;
+            let c = cell
+                .as_char()
+                .ok_or(Error::TypeError("pprint_str expected string"))?;
             Self::write(writer, c)?;
             head = rest;
         }
@@ -578,7 +599,10 @@ impl Runtime {
         }
         let cell = self.deref(form).unwrap();
         if let Some(symbol_id) = cell.as_symbol() {
-            let offset = *self.symbol_offsets.get(symbol_id as usize).ok_or(Error::UnknownSymbol)?;
+            let offset = *self
+                .symbol_offsets
+                .get(symbol_id as usize)
+                .ok_or(Error::UnknownSymbol)?;
             let buffer_bytes = self.symbol_buffer.as_bytes();
             let start = offset as usize;
             let mut end = start;
@@ -591,7 +615,8 @@ impl Runtime {
         } else if let Some(n) = cell.as_int() {
             write!(writer, "{}", n).map_err(Error::Handler)
         } else if let Some(builtin_id) = cell.as_builtin() {
-            let builtin = Builtin::from_u8(builtin_id).ok_or(Error::TypeError("invalid builtin"))?;
+            let builtin =
+                Builtin::from_u8(builtin_id).ok_or(Error::TypeError("invalid builtin"))?;
             write!(writer, "{:?}", builtin).map_err(Error::Handler)
         } else if let Some(ch) = cell.as_char() {
             write!(writer, "{}", ch).map_err(Error::Handler)
@@ -691,8 +716,7 @@ mod tests {
     fn test_read_simple() {
         let mut runtime = Runtime::new();
         let mut cursor = Cursor::new("(+ 1 2)");
-        let _form = runtime.read(&mut cursor).unwrap();
-        // Just test that we can read it without crashing
+        let _ = runtime.read(&mut cursor).unwrap();
     }
 
     #[test]
@@ -709,7 +733,6 @@ mod tests {
         let mut cursor = Cursor::new("+");
         let ptr = runtime.read(&mut cursor).unwrap();
         let result = runtime.eval(ptr, NIL).unwrap();
-        // Builtin should eval to itself
         assert_eq!(ptr, result);
     }
 
@@ -798,10 +821,14 @@ mod tests {
         let _ = runtime.eval_str("(def double (fn (x) (* x 2)))").unwrap();
         let _ = runtime.eval_str("(def square (fn (x) (* x x)))").unwrap();
 
-        let res = runtime.eval_str("(sum (map square (list 1 2 3 4)))").unwrap();
+        let res = runtime
+            .eval_str("(sum (map square (list 1 2 3 4)))")
+            .unwrap();
         assert_eq!(runtime.deref_int(res).unwrap(), 30);
 
-        let res = runtime.eval_str("(sum (map double (list 5 10 15)))").unwrap();
+        let res = runtime
+            .eval_str("(sum (map double (list 5 10 15)))")
+            .unwrap();
         assert_eq!(runtime.deref_int(res).unwrap(), 60);
     }
 
@@ -816,7 +843,9 @@ mod tests {
             .unwrap();
         let _ = runtime.eval_str("(def double (fn (x) (* x 2)))").unwrap();
 
-        let _ = runtime.eval_str("(def factorials (list (fact 3) (fact 4) (fact 5))))").unwrap();
+        let _ = runtime
+            .eval_str("(def factorials (list (fact 3) (fact 4) (fact 5))))")
+            .unwrap();
         let res = runtime.eval_str("(sum (map double factorials))").unwrap();
         assert_eq!(runtime.deref_int(res).unwrap(), 300);
     }
@@ -831,7 +860,9 @@ mod tests {
 
         let _ = runtime.eval_str("(def double (fn (x) (* x 2)))").unwrap();
         let res = runtime
-            .eval_str("(let ((nums (list 5 10 15))) (let ((doubled (map double nums))) (first doubled)))")
+            .eval_str(
+                "(let ((nums (list 5 10 15))) (let ((doubled (map double nums))) (first doubled)))",
+            )
             .unwrap();
         assert_eq!(runtime.deref_int(res).unwrap(), 10);
     }
@@ -840,10 +871,14 @@ mod tests {
     fn test_logical_operators() {
         let mut runtime = Runtime::new();
 
-        let res = runtime.eval_str("(if (and (< 5 10) (not (= 3 4))) (+ 7 8) 0)").unwrap();
+        let res = runtime
+            .eval_str("(if (and (< 5 10) (not (= 3 4))) (+ 7 8) 0)")
+            .unwrap();
         assert_eq!(runtime.deref_int(res).unwrap(), 15);
 
-        let res = runtime.eval_str("(if (or (< 100 50) (and (< 3 5) (< 7 9))) (+ 10 20) 0)").unwrap();
+        let res = runtime
+            .eval_str("(if (or (< 100 50) (and (< 3 5) (< 7 9))) (+ 10 20) 0)")
+            .unwrap();
         assert_eq!(runtime.deref_int(res).unwrap(), 30);
 
         let res = runtime.eval_str("(if (and (< 10 5) (< 3 5)) 1 2)").unwrap();
@@ -851,5 +886,78 @@ mod tests {
 
         let res = runtime.eval_str("(if (or (< 10 5) (< 10 5)) 1 2)").unwrap();
         assert_eq!(runtime.deref_int(res).unwrap(), 2);
+    }
+
+    #[test]
+    fn test_quicksort() {
+        let mut runtime = Runtime::new();
+
+        // Test simple lambda application first
+        let res = runtime.eval_str("((fn (x) (< x 5)) 3)").unwrap();
+        // Should return truthy value since 3 < 5
+        assert_ne!(res, NIL);
+
+        // Test passing lambda to another function
+        let _ = runtime.eval_str("(def call (fn (f x) (f x)))").unwrap();
+        let res = runtime.eval_str("(call (fn (y) (< y 5)) 3)").unwrap();
+        assert_ne!(res, NIL);
+
+        // Define append: concatenate two lists using defn
+        let _ = runtime
+            .eval_str("(defn append (a b) (if a (cons (car a) (append (cdr a) b)) b))")
+            .unwrap();
+
+        // Test append works
+        let res = runtime.eval_str("(append (list 1 2) (list 3 4))").unwrap();
+        assert_eq!(runtime.deref_int(runtime.first(res).unwrap()).unwrap(), 1);
+
+        // Define filter with defn
+        let _ = runtime
+            .eval_str("(defn filt (p l) (if l (if (p (car l)) (cons (car l) (filt p (cdr l))) (filt p (cdr l))) nil))")
+            .unwrap();
+
+        // Test that nil works
+        let res = runtime.eval_str("nil").unwrap();
+        assert_eq!(res, NIL);
+
+        // Test nil in a list
+        let res = runtime.eval_str("(list 1 nil 2)").unwrap();
+        assert_eq!(runtime.deref_int(runtime.first(res).unwrap()).unwrap(), 1);
+
+        // Test simpler recursive function without function param first
+        let _ = runtime
+            .eval_str("(defn countdown (n) (if (< n 1) nil (cons n (countdown (- n 1)))))")
+            .unwrap();
+        let res = runtime.eval_str("(countdown 3)").unwrap();
+        assert_eq!(runtime.deref_int(runtime.first(res).unwrap()).unwrap(), 3);
+
+        // Test filter with a named predicate
+        let _ = runtime.eval_str("(defn lt5 (x) (< x 5))").unwrap();
+        let res = runtime.eval_str("(filt lt5 (list 3 7 2 9 1))").unwrap();
+        assert_eq!(runtime.deref_int(runtime.first(res).unwrap()).unwrap(), 3);
+
+        // Define quicksort using the filt function we defined
+        let _ = runtime
+            .eval_str("(defn qsort (lst) (if (and lst (cdr lst)) (let ((pivot (car lst)) (tail (cdr lst))) (append (append (qsort (filt (fn (x) (< x pivot)) tail)) (list pivot)) (qsort (filt (fn (x) (not (< x pivot))) tail)))) lst))")
+            .unwrap();
+
+        // Test with small list first
+        let res = runtime.eval_str("(qsort (list 3 1 2))").unwrap();
+        assert_eq!(runtime.deref_int(runtime.first(res).unwrap()).unwrap(), 1);
+        assert_eq!(runtime.deref_int(runtime.second(res).unwrap()).unwrap(), 2);
+        assert_eq!(runtime.deref_int(runtime.third(res).unwrap()).unwrap(), 3);
+
+        // Test with empty list
+        let res = runtime.eval_str("(qsort nil)").unwrap();
+        assert_eq!(res, NIL);
+
+        // Test with single element
+        let res = runtime.eval_str("(qsort (list 42))").unwrap();
+        assert_eq!(runtime.deref_int(runtime.first(res).unwrap()).unwrap(), 42);
+
+        // Test with two elements
+        let res = runtime.eval_str("(qsort (list 2 1))").unwrap();
+        assert_eq!(runtime.deref_int(runtime.first(res).unwrap()).unwrap(), 1);
+        assert_eq!(runtime.deref_int(runtime.second(res).unwrap()).unwrap(), 2);
     }
 }
