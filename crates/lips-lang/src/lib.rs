@@ -175,6 +175,17 @@ impl Runtime {
         self.arena.deref(pointer).ok_or(Error::InvalidPointer)
     }
 
+    fn get_symbol_str(&self, symbol_id: u16) -> &str {
+        let offset = self.symbol_offsets.get(symbol_id as usize).unwrap();
+        let buffer_bytes = self.symbol_buffer.as_bytes();
+        let start = *offset as usize;
+        let mut end = start;
+        while end < buffer_bytes.len() && buffer_bytes[end] != 0 {
+            end += 1;
+        }
+        core::str::from_utf8(&buffer_bytes[start..end]).unwrap()
+    }
+
     fn read_rest(&mut self, cursor: &mut Cursor) -> Result<Pointer, Error> {
         match self.read(cursor) {
             Ok(head) => {
@@ -702,7 +713,42 @@ impl Runtime {
 
 impl fmt::Display for Runtime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "==== ENV ====")?;
+        // Summary statistics
+        writeln!(f, "==== RUNTIME SUMMARY ====")?;
+
+        // Memory stats
+        let total_cells = self.arena.cell_count();
+        let free_cells = self.arena.free_count();
+        let used_cells = total_cells - free_cells;
+        writeln!(f, "Memory: {}/{} cells used ({} free)", used_cells, total_cells, free_cells)?;
+
+        // Symbol stats
+        let symbol_count = self.symbol_offsets.len();
+        let symbol_buffer_used = self.symbol_buffer.len();
+        writeln!(f, "Symbols: {}/100 ({} chars / 1000)", symbol_count, symbol_buffer_used)?;
+
+        // Environment entries
+        let mut env_count = 0;
+        let mut head = self.env;
+        while head != NIL {
+            env_count += 1;
+            if let Ok((_, tail)) = self.split(head) {
+                head = tail;
+            } else {
+                break;
+            }
+        }
+        writeln!(f, "Environment: {} bindings", env_count)?;
+
+        // Symbol table
+        writeln!(f, "\n==== SYMBOL TABLE ====")?;
+        for idx in 0..self.symbol_offsets.len() {
+            let symbol_str = self.get_symbol_str(idx as u16);
+            writeln!(f, "{}: {}", idx, symbol_str)?;
+        }
+
+        // Environment
+        writeln!(f, "\n==== ENVIRONMENT ====")?;
         let mut head = self.env;
         while head != NIL {
             let (entry, tail) = self.split(head).expect("invalid env entry");
@@ -713,7 +759,9 @@ impl fmt::Display for Runtime {
             writeln!(f)?;
             head = tail;
         }
-        writeln!(f, "==== ARENA ====")?;
+
+        // Arena details
+        writeln!(f, "\n==== ARENA ====")?;
         write!(f, "{}", self.arena)
     }
 }

@@ -34,7 +34,6 @@ pub const NIL: Pointer = Pointer(NIL_PTR);
 pub struct Object(u32);
 
 impl Object {
-    // Constructors
     pub fn cons(car: Pointer, cdr: Pointer) -> Self {
         let payload = ((cdr.0 as u32) << CDR_SHIFT) | ((car.0 as u32) << CAR_SHIFT);
         Object(payload | TAG_CONS)
@@ -59,10 +58,6 @@ impl Object {
     // Type checking
     fn tag(&self) -> u32 {
         self.0 & TAG_MASK
-    }
-
-    pub fn is_atom(&self) -> bool {
-        self.tag() != TAG_CONS
     }
 
     pub fn is_cons(&self) -> bool {
@@ -142,7 +137,6 @@ impl Object {
 pub struct Arena {
     workspace: Vec<Object, WORKSPACE_SIZE>,
     free: Pointer,
-    obj_count: usize,
 }
 
 #[derive(Debug)]
@@ -155,7 +149,6 @@ impl Arena {
         Self {
             workspace: Vec::new(),
             free: NIL,
-            obj_count: 0,
         }
     }
 
@@ -167,7 +160,6 @@ impl Arena {
     }
 
     pub fn alloc(&mut self, cell: Object) -> Result<Pointer, Error> {
-        self.obj_count += 1;
         if self.free == NIL {
             self.workspace.push(cell).map_err(|_| Error::OutOfMemory)?;
             Ok(Pointer(self.workspace.len() as u16 - 1))
@@ -210,12 +202,33 @@ impl Arena {
         self.mark(env);
         for idx in 0..self.workspace.len() {
             if !self.workspace[idx].is_marked() {
-                self.obj_count -= 1;
                 let freed = Pointer(idx as u16);
                 self.workspace[idx] = Object::cons(freed, self.free);
                 self.free = freed;
             }
         }
+    }
+
+    pub fn cell_count(&self) -> usize {
+        self.workspace.len()
+    }
+
+    pub fn free_count(&self) -> usize {
+        let mut count = 0;
+        let mut ptr = self.free;
+        while ptr != NIL {
+            count += 1;
+            if let Some(cell) = self.deref(ptr) {
+                if let Some((_, cdr)) = cell.as_cons() {
+                    ptr = cdr;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        count
     }
 }
 
@@ -249,7 +262,6 @@ impl core::fmt::Display for Object {
 
 impl core::fmt::Display for Arena {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        writeln!(f, "{}/{}", self.obj_count, WORKSPACE_SIZE)?;
         for (idx, cell) in self.workspace.iter().enumerate() {
             if let Some((car, _)) = cell.as_cons() {
                 if car.0 == idx as u16 {
