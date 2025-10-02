@@ -500,9 +500,15 @@ impl Runtime {
                 self.filter(predicate, list, env)
             }
             Append => {
-                let a = self.eval(self.first(args)?, env)?;
-                let b = self.eval(self.second(args)?, env)?;
-                self.append(a, b)
+                let mut result = NIL;
+                let mut head = args;
+                while head != NIL {
+                    let (car, cdr) = self.split(head)?;
+                    let arg = self.eval(car, env)?;
+                    result = self.append(result, arg)?;
+                    head = cdr;
+                }
+                Ok(result)
             }
         }
     }
@@ -944,6 +950,12 @@ mod tests {
         assert_eq!(runtime.deref_int(runtime.first(res).unwrap()).unwrap(), 1);
         assert_eq!(runtime.deref_int(runtime.second(res).unwrap()).unwrap(), 2);
         assert_eq!(runtime.deref_int(runtime.third(res).unwrap()).unwrap(), 3);
+
+        // Test multi-arg append
+        let res = runtime.eval_str("(append (list 1) (list 2) (list 3 4))").unwrap();
+        assert_eq!(runtime.deref_int(runtime.first(res).unwrap()).unwrap(), 1);
+        assert_eq!(runtime.deref_int(runtime.second(res).unwrap()).unwrap(), 2);
+        assert_eq!(runtime.deref_int(runtime.third(res).unwrap()).unwrap(), 3);
     }
 
     #[test]
@@ -951,7 +963,7 @@ mod tests {
         let mut runtime = Runtime::new();
 
         let _ = runtime
-            .eval_str("(defn qsort (lst) (if (and lst (cdr lst)) (let ((pivot (car lst)) (tail (cdr lst))) (append (append (qsort (filter (fn (x) (< x pivot)) tail)) (list pivot)) (qsort (filter (fn (x) (not (< x pivot))) tail)))) lst))")
+            .eval_str("(defn qsort (lst) (if (and lst (cdr lst)) (let ((pivot (car lst)) (tail (cdr lst))) (append (qsort (filter (fn (x) (< x pivot)) tail)) (list pivot) (qsort (filter (fn (x) (not (< x pivot))) tail)))) lst))")
             .unwrap();
 
         let res = runtime.eval_str("(qsort (list 3 1 2))").unwrap();
