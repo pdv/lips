@@ -167,9 +167,7 @@ impl Arena {
     pub fn alloc(&mut self, cell: Cell) -> Result<Pointer, Error> {
         self.obj_count += 1;
         if self.free == NIL {
-            self.workspace
-                .push(cell)
-                .map_err(|_| Error::OutOfMemory)?;
+            self.workspace.push(cell).map_err(|_| Error::OutOfMemory)?;
             Ok(Pointer(self.workspace.len() as u16 - 1))
         } else {
             match self.deref(self.free) {
@@ -273,15 +271,16 @@ mod tests {
     }
 
     #[test]
-    fn test_cell_encoding() {
-        // Test int encoding
+    fn test_int() {
         let cell = Cell::int(42);
         assert_eq!(cell.as_int().unwrap(), 42);
 
         let cell = Cell::int(-42);
         assert_eq!(cell.as_int().unwrap(), -42);
+    }
 
-        // Test cons encoding
+    #[test]
+    fn test_cons() {
         let cell = Cell::cons(Pointer(10), Pointer(20));
         let (car, cdr) = cell.as_cons().unwrap();
         assert_eq!(car, Pointer(10));
@@ -298,16 +297,16 @@ mod tests {
         let (car, cdr) = cell.as_cons().unwrap();
         assert_eq!(car, Pointer(5));
         assert_eq!(cdr, NIL);
+    }
 
-        // Test symbol encoding
+    #[test]
+    fn test_atoms() {
         let cell = Cell::symbol(100);
         assert_eq!(cell.as_symbol().unwrap(), 100);
 
-        // Test builtin encoding
         let cell = Cell::builtin(5);
         assert_eq!(cell.as_builtin().unwrap(), 5);
 
-        // Test char encoding
         let cell = Cell::char('A');
         assert_eq!(cell.as_char().unwrap(), 'A');
     }

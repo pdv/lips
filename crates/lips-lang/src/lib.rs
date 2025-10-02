@@ -40,6 +40,8 @@ enum Builtin {
     Second = 25,
     Third = 26,
     Nil = 27,
+    Filter = 28,
+    Append = 29,
 }
 
 impl Builtin {
@@ -73,6 +75,8 @@ impl Builtin {
             25 => Some(Self::Second),
             26 => Some(Self::Third),
             27 => Some(Self::Nil),
+            28 => Some(Self::Filter),
+            29 => Some(Self::Append),
             _ => None,
         }
     }
@@ -114,6 +118,8 @@ impl TryFrom<&str> for Builtin {
             "second" => Self::Second,
             "third" => Self::Third,
             "nil" => Self::Nil,
+            "filter" => Self::Filter,
+            "append" => Self::Append,
             _ => return Err(Error::UnknownSymbol),
         };
         Ok(function)
@@ -488,6 +494,16 @@ impl Runtime {
                 self.third(list)
             }
             Nil => Ok(NIL),
+            Filter => {
+                let predicate = self.eval(self.first(args)?, env)?;
+                let list = self.eval(self.second(args)?, env)?;
+                self.filter(predicate, list, env)
+            }
+            Append => {
+                let a = self.eval(self.first(args)?, env)?;
+                let b = self.eval(self.second(args)?, env)?;
+                self.append(a, b)
+            }
         }
     }
 
@@ -500,6 +516,30 @@ impl Runtime {
         let res = self.apply(function, args, env)?;
         let tail = self.map(function, rest, env)?;
         self.cons(res, tail)
+    }
+
+    fn filter(&mut self, predicate: Pointer, list: Pointer, env: Pointer) -> Result<Pointer, Error> {
+        if list == NIL {
+            return Ok(NIL);
+        }
+        let (head, rest) = self.split(list)?;
+        let args = self.cons(head, NIL)?;
+        let test = self.apply(predicate, args, env)?;
+        let tail = self.filter(predicate, rest, env)?;
+        if test != NIL {
+            self.cons(head, tail)
+        } else {
+            Ok(tail)
+        }
+    }
+
+    fn append(&mut self, a: Pointer, b: Pointer) -> Result<Pointer, Error> {
+        if a == NIL {
+            return Ok(b);
+        }
+        let (head, rest) = self.split(a)?;
+        let tail = self.append(rest, b)?;
+        self.cons(head, tail)
     }
 
     fn apply(&mut self, function: Pointer, args: Pointer, env: Pointer) -> Result<Pointer, Error> {
@@ -889,73 +929,42 @@ mod tests {
     }
 
     #[test]
+    fn test_filter() {
+        let mut runtime = Runtime::new();
+        let res = runtime.eval_str("(filter (fn (x) (< x 5)) (list 1 7 3 9 2))").unwrap();
+        assert_eq!(runtime.deref_int(runtime.first(res).unwrap()).unwrap(), 1);
+        assert_eq!(runtime.deref_int(runtime.second(res).unwrap()).unwrap(), 3);
+        assert_eq!(runtime.deref_int(runtime.third(res).unwrap()).unwrap(), 2);
+    }
+
+    #[test]
+    fn test_append() {
+        let mut runtime = Runtime::new();
+        let res = runtime.eval_str("(append (list 1 2) (list 3 4))").unwrap();
+        assert_eq!(runtime.deref_int(runtime.first(res).unwrap()).unwrap(), 1);
+        assert_eq!(runtime.deref_int(runtime.second(res).unwrap()).unwrap(), 2);
+        assert_eq!(runtime.deref_int(runtime.third(res).unwrap()).unwrap(), 3);
+    }
+
+    #[test]
     fn test_quicksort() {
         let mut runtime = Runtime::new();
 
-        // Test simple lambda application first
-        let res = runtime.eval_str("((fn (x) (< x 5)) 3)").unwrap();
-        // Should return truthy value since 3 < 5
-        assert_ne!(res, NIL);
-
-        // Test passing lambda to another function
-        let _ = runtime.eval_str("(def call (fn (f x) (f x)))").unwrap();
-        let res = runtime.eval_str("(call (fn (y) (< y 5)) 3)").unwrap();
-        assert_ne!(res, NIL);
-
-        // Define append: concatenate two lists using defn
         let _ = runtime
-            .eval_str("(defn append (a b) (if a (cons (car a) (append (cdr a) b)) b))")
+            .eval_str("(defn qsort (lst) (if (and lst (cdr lst)) (let ((pivot (car lst)) (tail (cdr lst))) (append (append (qsort (filter (fn (x) (< x pivot)) tail)) (list pivot)) (qsort (filter (fn (x) (not (< x pivot))) tail)))) lst))")
             .unwrap();
 
-        // Test append works
-        let res = runtime.eval_str("(append (list 1 2) (list 3 4))").unwrap();
-        assert_eq!(runtime.deref_int(runtime.first(res).unwrap()).unwrap(), 1);
-
-        // Define filter with defn
-        let _ = runtime
-            .eval_str("(defn filt (p l) (if l (if (p (car l)) (cons (car l) (filt p (cdr l))) (filt p (cdr l))) nil))")
-            .unwrap();
-
-        // Test that nil works
-        let res = runtime.eval_str("nil").unwrap();
-        assert_eq!(res, NIL);
-
-        // Test nil in a list
-        let res = runtime.eval_str("(list 1 nil 2)").unwrap();
-        assert_eq!(runtime.deref_int(runtime.first(res).unwrap()).unwrap(), 1);
-
-        // Test simpler recursive function without function param first
-        let _ = runtime
-            .eval_str("(defn countdown (n) (if (< n 1) nil (cons n (countdown (- n 1)))))")
-            .unwrap();
-        let res = runtime.eval_str("(countdown 3)").unwrap();
-        assert_eq!(runtime.deref_int(runtime.first(res).unwrap()).unwrap(), 3);
-
-        // Test filter with a named predicate
-        let _ = runtime.eval_str("(defn lt5 (x) (< x 5))").unwrap();
-        let res = runtime.eval_str("(filt lt5 (list 3 7 2 9 1))").unwrap();
-        assert_eq!(runtime.deref_int(runtime.first(res).unwrap()).unwrap(), 3);
-
-        // Define quicksort using the filt function we defined
-        let _ = runtime
-            .eval_str("(defn qsort (lst) (if (and lst (cdr lst)) (let ((pivot (car lst)) (tail (cdr lst))) (append (append (qsort (filt (fn (x) (< x pivot)) tail)) (list pivot)) (qsort (filt (fn (x) (not (< x pivot))) tail)))) lst))")
-            .unwrap();
-
-        // Test with small list first
         let res = runtime.eval_str("(qsort (list 3 1 2))").unwrap();
         assert_eq!(runtime.deref_int(runtime.first(res).unwrap()).unwrap(), 1);
         assert_eq!(runtime.deref_int(runtime.second(res).unwrap()).unwrap(), 2);
         assert_eq!(runtime.deref_int(runtime.third(res).unwrap()).unwrap(), 3);
 
-        // Test with empty list
         let res = runtime.eval_str("(qsort nil)").unwrap();
         assert_eq!(res, NIL);
 
-        // Test with single element
         let res = runtime.eval_str("(qsort (list 42))").unwrap();
         assert_eq!(runtime.deref_int(runtime.first(res).unwrap()).unwrap(), 42);
 
-        // Test with two elements
         let res = runtime.eval_str("(qsort (list 2 1))").unwrap();
         assert_eq!(runtime.deref_int(runtime.first(res).unwrap()).unwrap(), 1);
         assert_eq!(runtime.deref_int(runtime.second(res).unwrap()).unwrap(), 2);
