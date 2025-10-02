@@ -3,7 +3,7 @@
 use core::fmt::{self, Debug};
 
 use arena::{Arena, Cell, Pointer, NIL};
-use heapless::String;
+use heapless::{String, Vec};
 use lexer::{Cursor, Token};
 
 mod arena;
@@ -121,6 +121,7 @@ impl TryFrom<&str> for Builtin {
 pub struct Runtime {
     arena: Arena,
     symbol_buffer: String<1000>,
+    symbol_offsets: Vec<u16, 100>,
     env: Pointer,
 }
 
@@ -152,6 +153,7 @@ impl Runtime {
         Runtime {
             arena: Arena::new(),
             symbol_buffer: String::new(),
+            symbol_offsets: Vec::new(),
             env: NIL,
         }
     }
@@ -205,27 +207,28 @@ impl Runtime {
                 } else if let Ok(builtin) = Builtin::try_from(s) {
                     Cell::builtin(builtin.to_u8())
                 } else {
-                    // Search for existing symbol in buffer
-                    let mut offset = 0;
+                    // Search for existing symbol by iterating through symbol_offsets
                     let buffer_bytes = self.symbol_buffer.as_bytes();
-                    while offset < buffer_bytes.len() {
-                        let start = offset;
-                        while offset < buffer_bytes.len() && buffer_bytes[offset] != 0 {
-                            offset += 1;
+                    for (symbol_id, &offset) in self.symbol_offsets.iter().enumerate() {
+                        let start = offset as usize;
+                        let mut end = start;
+                        while end < buffer_bytes.len() && buffer_bytes[end] != 0 {
+                            end += 1;
                         }
-                        let symbol = core::str::from_utf8(&buffer_bytes[start..offset])
+                        let symbol = core::str::from_utf8(&buffer_bytes[start..end])
                             .map_err(|_| Error::InvalidSymbol)?;
                         if symbol == s {
-                            return self.alloc(Cell::symbol(start as u16));
+                            return self.alloc(Cell::symbol(symbol_id as u16));
                         }
-                        offset += 1; // skip null byte
                     }
 
                     // Symbol not found, add it
                     let new_offset = self.symbol_buffer.len() as u16;
+                    let symbol_id = self.symbol_offsets.len() as u16;
                     self.symbol_buffer.push_str(s).map_err(|_| Error::SymbolTableFull)?;
                     self.symbol_buffer.push('\0').map_err(|_| Error::SymbolTableFull)?;
-                    Cell::symbol(new_offset)
+                    self.symbol_offsets.push(new_offset).map_err(|_| Error::SymbolTableFull)?;
+                    Cell::symbol(symbol_id)
                 };
                 self.alloc(cell)
             }
@@ -575,7 +578,8 @@ impl Runtime {
             return self.pprint_str(writer, form);
         }
         let cell = self.deref(form).unwrap();
-        if let Some(offset) = cell.as_symbol() {
+        if let Some(symbol_id) = cell.as_symbol() {
+            let offset = *self.symbol_offsets.get(symbol_id as usize).ok_or(Error::UnknownSymbol)?;
             let buffer_bytes = self.symbol_buffer.as_bytes();
             let start = offset as usize;
             let mut end = start;
