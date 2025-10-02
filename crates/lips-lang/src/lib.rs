@@ -2,7 +2,7 @@
 
 use core::fmt::{self, Debug};
 
-use arena::{Arena, Cell, Pointer, NIL};
+use arena::{Arena, Object, Pointer, NIL};
 use heapless::{String, Vec};
 use lexer::{Cursor, Token};
 
@@ -167,11 +167,11 @@ impl Runtime {
         }
     }
 
-    fn alloc(&mut self, cell: Cell) -> Result<Pointer, Error> {
+    fn alloc(&mut self, cell: Object) -> Result<Pointer, Error> {
         self.arena.alloc(cell).map_err(Error::Arena)
     }
 
-    fn deref(&self, pointer: Pointer) -> Result<Cell, Error> {
+    fn deref(&self, pointer: Pointer) -> Result<Object, Error> {
         self.arena.deref(pointer).ok_or(Error::InvalidPointer)
     }
 
@@ -203,7 +203,7 @@ impl Runtime {
                 };
                 let mut s = NIL;
                 for c in string.chars().rev() {
-                    let c = self.alloc(Cell::char(c))?;
+                    let c = self.alloc(Object::char(c))?;
                     s = self.cons(c, s)?;
                 }
                 let _ = cursor.next(); // close quote
@@ -215,10 +215,10 @@ impl Runtime {
                     return Ok(NIL);
                 }
 
-                let cell = if let Ok(n) = s.parse::<i32>() {
-                    Cell::int(n)
+                let cell = if let Ok(n) = s.parse::<i16>() {
+                    Object::int(n)
                 } else if let Ok(builtin) = Builtin::try_from(s) {
-                    Cell::builtin(builtin.to_u8())
+                    Object::builtin(builtin.to_u8())
                 } else {
                     let buffer_bytes = self.symbol_buffer.as_bytes();
                     for (symbol_id, &offset) in self.symbol_offsets.iter().enumerate() {
@@ -230,7 +230,7 @@ impl Runtime {
                         let symbol = core::str::from_utf8(&buffer_bytes[start..end])
                             .map_err(|_| Error::InvalidSymbol)?;
                         if symbol == s {
-                            return self.alloc(Cell::symbol(symbol_id as u16));
+                            return self.alloc(Object::symbol(symbol_id as u16));
                         }
                     }
 
@@ -246,19 +246,19 @@ impl Runtime {
                     self.symbol_offsets
                         .push(new_offset)
                         .map_err(|_| Error::SymbolTableFull)?;
-                    Cell::symbol(symbol_id)
+                    Object::symbol(symbol_id)
                 };
                 self.alloc(cell)
             }
         }
     }
 
-    fn int(&mut self, n: i32) -> Result<Pointer, Error> {
-        self.alloc(Cell::int(n))
+    fn int(&mut self, n: i16) -> Result<Pointer, Error> {
+        self.alloc(Object::int(n))
     }
 
     fn cons(&mut self, car: Pointer, cdr: Pointer) -> Result<Pointer, Error> {
-        self.alloc(Cell::cons(car, cdr))
+        self.alloc(Object::cons(car, cdr))
     }
 
     fn split(&self, pointer: Pointer) -> Result<(Pointer, Pointer), Error> {
@@ -289,9 +289,11 @@ impl Runtime {
         self.car(self.cdr(self.cdr(pointer)?)?)
     }
 
-    pub fn deref_int(&self, pointer: Pointer) -> Result<i32, Error> {
+    pub fn deref_int(&self, pointer: Pointer) -> Result<i16, Error> {
         let cell = self.deref(pointer)?;
-        cell.as_int().ok_or(Error::TypeError("expected int"))
+        cell.as_int()
+            .and_then(|n| n.try_into().ok())
+            .ok_or(Error::TypeError("expected int"))
     }
 
     fn lookup(&self, env: Pointer, id: u16) -> Result<Option<Pointer>, Error> {
@@ -340,12 +342,12 @@ impl Runtime {
                 Ok(NIL)
             }
             Add => {
-                let mut sum = 0;
+                let mut sum: i16 = 0;
                 let mut head = args;
                 while head != NIL {
                     let (car, cdr) = self.split(head)?;
                     let arg = self.eval(car, env)?;
-                    sum += self.deref_int(arg)?;
+                    sum = sum.wrapping_add(self.deref_int(arg)?);
                     head = cdr;
                 }
                 self.int(sum)
@@ -353,15 +355,15 @@ impl Runtime {
             Sub => {
                 let a = self.eval(self.first(args)?, env)?;
                 let b = self.eval(self.second(args)?, env)?;
-                self.int(self.deref_int(a)? - self.deref_int(b)?)
+                self.int(self.deref_int(a)?.wrapping_sub(self.deref_int(b)?))
             }
             Mul => {
-                let mut product = 1;
+                let mut product: i16 = 1;
                 let mut head = args;
                 while head != NIL {
                     let (car, cdr) = self.split(head)?;
                     let arg = self.eval(car, env)?;
-                    product *= self.deref_int(arg)?;
+                    product = product.wrapping_mul(self.deref_int(arg)?);
                     head = cdr;
                 }
                 self.int(product)
@@ -369,7 +371,7 @@ impl Runtime {
             Div => {
                 let a = self.eval(self.first(args)?, env)?;
                 let b = self.eval(self.second(args)?, env)?;
-                self.int(self.deref_int(a)? / self.deref_int(b)?)
+                self.int(self.deref_int(a)?.wrapping_div(self.deref_int(b)?))
             }
             Lambda => {
                 let params = self.first(args)?;
@@ -524,7 +526,12 @@ impl Runtime {
         self.cons(res, tail)
     }
 
-    fn filter(&mut self, predicate: Pointer, list: Pointer, env: Pointer) -> Result<Pointer, Error> {
+    fn filter(
+        &mut self,
+        predicate: Pointer,
+        list: Pointer,
+        env: Pointer,
+    ) -> Result<Pointer, Error> {
         if list == NIL {
             return Ok(NIL);
         }
@@ -643,7 +650,7 @@ impl Runtime {
         if self.is_str(form)? {
             return self.pprint_str(writer, form);
         }
-        let cell = self.deref(form).unwrap();
+        let cell = self.deref(form)?;
         if let Some(symbol_id) = cell.as_symbol() {
             let offset = *self
                 .symbol_offsets
@@ -751,7 +758,7 @@ mod tests {
         }
     }
 
-    fn assert_int(form: &str, expected: i32) {
+    fn assert_int(form: &str, expected: i16) {
         let mut runtime = Runtime::new();
         let res = runtime.eval_str(form).unwrap();
         let actual = runtime.deref_int(res).unwrap();
@@ -937,7 +944,9 @@ mod tests {
     #[test]
     fn test_filter() {
         let mut runtime = Runtime::new();
-        let res = runtime.eval_str("(filter (fn (x) (< x 5)) (list 1 7 3 9 2))").unwrap();
+        let res = runtime
+            .eval_str("(filter (fn (x) (< x 5)) (list 1 7 3 9 2))")
+            .unwrap();
         assert_eq!(runtime.deref_int(runtime.first(res).unwrap()).unwrap(), 1);
         assert_eq!(runtime.deref_int(runtime.second(res).unwrap()).unwrap(), 3);
         assert_eq!(runtime.deref_int(runtime.third(res).unwrap()).unwrap(), 2);
@@ -952,7 +961,9 @@ mod tests {
         assert_eq!(runtime.deref_int(runtime.third(res).unwrap()).unwrap(), 3);
 
         // Test multi-arg append
-        let res = runtime.eval_str("(append (list 1) (list 2) (list 3 4))").unwrap();
+        let res = runtime
+            .eval_str("(append (list 1) (list 2) (list 3 4))")
+            .unwrap();
         assert_eq!(runtime.deref_int(runtime.first(res).unwrap()).unwrap(), 1);
         assert_eq!(runtime.deref_int(runtime.second(res).unwrap()).unwrap(), 2);
         assert_eq!(runtime.deref_int(runtime.third(res).unwrap()).unwrap(), 3);

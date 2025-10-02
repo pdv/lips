@@ -6,82 +6,59 @@ const WORKSPACE_SIZE: usize = 1000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pointer(u16);
 
-// NIL must fit in 15 bits since cons cells use 15-bit pointers
-pub const NIL: Pointer = Pointer(0x7FFF);
+pub const NIL: Pointer = Pointer(0xFEFF);
 
-// Cell encoding: 32-bit tagged union
-// Tag (2 bits): 00=Cons, 01=Int, 10=Symbol, 11=Atom
-const TAG_CONS: u32 = 0b00;
-const TAG_INT: u32 = 0b01;
-const TAG_SYMBOL: u32 = 0b10;
-const TAG_ATOM: u32 = 0b11;
-const TAG_MASK: u32 = 0b11;
-
-// Atom subtypes (3 bits when tag=11)
-const ATOM_BUILTIN: u32 = 0b000;
-const ATOM_CHAR: u32 = 0b001;
-const ATOM_SUBTYPE_MASK: u32 = 0b111;
+const MARKER_INT: u16 = 0xFF00;
+const MARKER_CHAR: u16 = 0xFF01;
+const MARKER_SYMBOL: u16 = 0xFF02;
+const MARKER_BUILTIN: u16 = 0xFF03;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Cell(u32);
+pub struct Object(u16, u16);
 
-impl Cell {
+impl Object {
     // Constructors
     pub fn cons(car: Pointer, cdr: Pointer) -> Self {
-        let car_bits = (car.0 as u32) << 17;
-        let cdr_bits = (cdr.0 as u32) << 2;
-        Cell(TAG_CONS | cdr_bits | car_bits)
+        Object(car.0, cdr.0)
     }
 
-    pub fn int(value: i32) -> Self {
-        // Encode 30-bit signed int
-        let bits = ((value as u32) << 2) & 0xFFFF_FFFC;
-        Cell(TAG_INT | bits)
+    pub fn int(value: i16) -> Self {
+        Object(MARKER_INT, value as u16)
     }
 
     pub fn symbol(index: u16) -> Self {
-        let bits = (index as u32) << 2;
-        Cell(TAG_SYMBOL | bits)
+        Object(MARKER_SYMBOL, index)
     }
 
     pub fn builtin(id: u8) -> Self {
-        let subtype = ATOM_BUILTIN << 2;
-        let value = (id as u32) << 5;
-        Cell(TAG_ATOM | subtype | value)
+        Object(MARKER_BUILTIN, id as u16)
     }
 
     pub fn char(ch: char) -> Self {
-        let subtype = ATOM_CHAR << 2;
-        let value = (ch as u32) << 5;
-        Cell(TAG_ATOM | subtype | value)
+        Object(MARKER_CHAR, ch as u16)
     }
 
-    // Decoders
-    pub fn tag(&self) -> u32 {
-        self.0 & TAG_MASK
+    // Type checking
+    pub fn is_atom(&self) -> bool {
+        self.0 >= MARKER_INT
     }
 
     pub fn is_cons(&self) -> bool {
-        self.tag() == TAG_CONS
+        !self.is_atom()
     }
 
     pub fn is_int(&self) -> bool {
-        self.tag() == TAG_INT
+        self.0 == MARKER_INT
     }
 
     pub fn is_symbol(&self) -> bool {
-        self.tag() == TAG_SYMBOL
+        self.0 == MARKER_SYMBOL
     }
 
-    pub fn is_atom(&self) -> bool {
-        self.tag() == TAG_ATOM
-    }
-
+    // Decoders
     pub fn as_cons(&self) -> Option<(Pointer, Pointer)> {
         if self.is_cons() {
-            let car = ((self.0 >> 17) & 0x7FFF) as u16;
-            let cdr = ((self.0 >> 2) & 0x7FFF) as u16;
-            Some((Pointer(car), Pointer(cdr)))
+            Some((Pointer(self.0), Pointer(self.1)))
         } else {
             None
         }
@@ -89,15 +66,7 @@ impl Cell {
 
     pub fn as_int(&self) -> Option<i32> {
         if self.is_int() {
-            // Extract 30-bit signed value
-            let bits = (self.0 >> 2) & 0x3FFF_FFFF;
-            // Sign extend from 30 bits to 32 bits
-            let value = if bits & 0x2000_0000 != 0 {
-                (bits | 0xC000_0000) as i32
-            } else {
-                bits as i32
-            };
-            Some(value)
+            Some(self.1 as i16 as i32)
         } else {
             None
         }
@@ -105,32 +74,23 @@ impl Cell {
 
     pub fn as_symbol(&self) -> Option<u16> {
         if self.is_symbol() {
-            Some(((self.0 >> 2) & 0x3FFF_FFFF) as u16)
-        } else {
-            None
-        }
-    }
-
-    pub fn atom_subtype(&self) -> Option<u32> {
-        if self.is_atom() {
-            Some((self.0 >> 2) & ATOM_SUBTYPE_MASK)
+            Some(self.1)
         } else {
             None
         }
     }
 
     pub fn as_builtin(&self) -> Option<u8> {
-        if self.atom_subtype()? == ATOM_BUILTIN {
-            Some(((self.0 >> 5) & 0x7F_FFFF) as u8)
+        if self.0 == MARKER_BUILTIN {
+            Some(self.1 as u8)
         } else {
             None
         }
     }
 
     pub fn as_char(&self) -> Option<char> {
-        if self.atom_subtype()? == ATOM_CHAR {
-            let code = (self.0 >> 5) & 0x1F_FFFF;
-            char::from_u32(code)
+        if self.0 == MARKER_CHAR {
+            char::from_u32(self.1 as u32)
         } else {
             None
         }
@@ -139,7 +99,7 @@ impl Cell {
 
 #[derive(Debug)]
 pub struct Arena {
-    workspace: Vec<Cell, WORKSPACE_SIZE>,
+    workspace: Vec<Object, WORKSPACE_SIZE>,
     marked: [bool; WORKSPACE_SIZE],
     free: Pointer,
     obj_count: usize,
@@ -160,11 +120,14 @@ impl Arena {
         }
     }
 
-    pub fn deref(&self, ptr: Pointer) -> Option<Cell> {
+    pub fn deref(&self, ptr: Pointer) -> Option<Object> {
+        if ptr == NIL {
+            return None;
+        }
         self.workspace.get(ptr.0 as usize).copied()
     }
 
-    pub fn alloc(&mut self, cell: Cell) -> Result<Pointer, Error> {
+    pub fn alloc(&mut self, cell: Object) -> Result<Pointer, Error> {
         self.obj_count += 1;
         if self.free == NIL {
             self.workspace.push(cell).map_err(|_| Error::OutOfMemory)?;
@@ -184,10 +147,14 @@ impl Arena {
     }
 
     fn mark(&mut self, ptr: Pointer) {
-        if ptr == NIL || self.marked[ptr.0 as usize] {
+        if ptr == NIL {
             return;
         }
-        self.marked[ptr.0 as usize] = true;
+        let idx = ptr.0 as usize;
+        if idx >= self.workspace.len() || self.marked[idx] {
+            return;
+        }
+        self.marked[idx] = true;
         if let Some(cell) = self.deref(ptr) {
             if let Some((car, cdr)) = cell.as_cons() {
                 self.mark(car);
@@ -203,7 +170,7 @@ impl Arena {
             if !self.marked[idx] {
                 self.obj_count -= 1;
                 let freed = Pointer(idx as u16);
-                self.workspace[idx] = Cell::cons(freed, self.free);
+                self.workspace[idx] = Object::cons(freed, self.free);
                 self.free = freed;
             }
         }
@@ -220,7 +187,7 @@ impl core::fmt::Display for Pointer {
     }
 }
 
-impl core::fmt::Display for Cell {
+impl core::fmt::Display for Object {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if let Some((car, cdr)) = self.as_cons() {
             write!(f, "({} {})", car, cdr)
@@ -260,9 +227,9 @@ mod tests {
     #[test]
     fn test_alloc() {
         let mut arena = Arena::new();
-        let a = arena.alloc(Cell::int(1)).unwrap();
-        let b = arena.alloc(Cell::int(2)).unwrap();
-        let c = arena.alloc(Cell::cons(a, b)).unwrap();
+        let a = arena.alloc(Object::int(1)).unwrap();
+        let b = arena.alloc(Object::int(2)).unwrap();
+        let c = arena.alloc(Object::cons(a, b)).unwrap();
         let cell = arena.deref(c).unwrap();
         assert!(cell.is_cons());
         let (car, _) = cell.as_cons().unwrap();
@@ -272,28 +239,28 @@ mod tests {
 
     #[test]
     fn test_int() {
-        let cell = Cell::int(42);
+        let cell = Object::int(42);
         assert_eq!(cell.as_int().unwrap(), 42);
 
-        let cell = Cell::int(-42);
+        let cell = Object::int(-42);
         assert_eq!(cell.as_int().unwrap(), -42);
     }
 
     #[test]
     fn test_cons() {
-        let cell = Cell::cons(Pointer(10), Pointer(20));
+        let cell = Object::cons(Pointer(10), Pointer(20));
         let (car, cdr) = cell.as_cons().unwrap();
         assert_eq!(car, Pointer(10));
         assert_eq!(cdr, Pointer(20));
 
         // Test cons with different values
-        let cell = Cell::cons(Pointer(0), Pointer(1));
+        let cell = Object::cons(Pointer(0), Pointer(1));
         let (car, cdr) = cell.as_cons().unwrap();
         assert_eq!(car, Pointer(0));
         assert_eq!(cdr, Pointer(1));
 
         // Test cons with NIL
-        let cell = Cell::cons(Pointer(5), NIL);
+        let cell = Object::cons(Pointer(5), NIL);
         let (car, cdr) = cell.as_cons().unwrap();
         assert_eq!(car, Pointer(5));
         assert_eq!(cdr, NIL);
@@ -301,13 +268,13 @@ mod tests {
 
     #[test]
     fn test_atoms() {
-        let cell = Cell::symbol(100);
+        let cell = Object::symbol(100);
         assert_eq!(cell.as_symbol().unwrap(), 100);
 
-        let cell = Cell::builtin(5);
+        let cell = Object::builtin(5);
         assert_eq!(cell.as_builtin().unwrap(), 5);
 
-        let cell = Cell::char('A');
+        let cell = Object::char('A');
         assert_eq!(cell.as_char().unwrap(), 'A');
     }
 }
