@@ -1,5 +1,8 @@
-use std::error::Error;
 use std::borrow::Cow;
+use std::env;
+use std::error::Error;
+use std::fs;
+use std::io::{self, IsTerminal, Read};
 
 use nu_ansi_term::{Color, Style};
 use reedline::{
@@ -90,7 +93,7 @@ impl Prompt for MyPrompt {
     }
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn run_repl() -> Result<(), Box<dyn Error>> {
     let mut rl = Reedline::create().with_highlighter(Box::new(SyntaxHighlighter {}));
     let prompt = MyPrompt {};
     let mut runtime = Runtime::default();
@@ -109,4 +112,33 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         println!("{}", result);
     }
+}
+
+fn run_source(source: &str) -> Result<(), Box<dyn Error>> {
+    let mut runtime = Runtime::default();
+    let mut result = String::new();
+    match runtime.eval_str(source) {
+        Ok(res) => runtime.pprint(&mut result, res).unwrap(),
+        Err(e) => print!("Error: {:?}", e),
+    }
+    println!("{}", result);
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let args: Vec<String> = env::args().collect();
+
+    if args.len() > 1 {
+        let source = fs::read_to_string(&args[1])?;
+        return run_source(&source);
+    }
+
+    if !io::stdin().is_terminal() {
+        let mut source = String::new();
+        io::stdin().read_to_string(&mut source)?;
+        return run_source(&source);
+    }
+
+    // Otherwise, run the interactive REPL
+    run_repl()
 }
