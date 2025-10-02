@@ -376,11 +376,10 @@ impl Runtime {
             }
             Do => {
                 let times = self.eval(self.first(args)?, env)?;
-                let body = self.cons(self.second(args)?, NIL)?;
-                let function = self.cons(NIL, body)?;
+                let body = self.second(args)?;
                 let mut res = NIL;
                 for _ in 0..self.deref_int(times)? {
-                    res = self.apply(function, NIL, env)?;
+                    res = self.eval(body, env)?;
                 }
                 Ok(res)
             }
