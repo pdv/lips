@@ -707,4 +707,68 @@ mod tests {
         let res = runtime.deref_inner(res).unwrap();
         assert_eq!(res, Object::Atom(Atom::Int(5)));
     }
+
+    #[test]
+    fn test_map_and_sum() {
+        let mut runtime = Runtime::new();
+        let _ = runtime
+            .eval_str("(def sum (fn (lst) (if lst (+ (first lst) (sum (cdr lst))) 0)))")
+            .unwrap();
+        let _ = runtime.eval_str("(def double (fn (x) (* x 2)))").unwrap();
+        let _ = runtime.eval_str("(def square (fn (x) (* x x)))").unwrap();
+
+        let res = runtime.eval_str("(sum (map square (list 1 2 3 4)))").unwrap();
+        assert_eq!(runtime.deref_int(res).unwrap(), 30);
+
+        let res = runtime.eval_str("(sum (map double (list 5 10 15)))").unwrap();
+        assert_eq!(runtime.deref_int(res).unwrap(), 60);
+    }
+
+    #[test]
+    fn test_factorial_with_map() {
+        let mut runtime = Runtime::new();
+        let _ = runtime
+            .eval_str("(def fact (fn (n) (if (< n 2) 1 (* n (fact (- n 1))))))")
+            .unwrap();
+        let _ = runtime
+            .eval_str("(def sum (fn (lst) (if lst (+ (first lst) (sum (cdr lst))) 0)))")
+            .unwrap();
+        let _ = runtime.eval_str("(def double (fn (x) (* x 2)))").unwrap();
+
+        let _ = runtime.eval_str("(def factorials (list (fact 3) (fact 4) (fact 5))))").unwrap();
+        let res = runtime.eval_str("(sum (map double factorials))").unwrap();
+        assert_eq!(runtime.deref_int(res).unwrap(), 300);
+    }
+
+    #[test]
+    fn test_nested_let() {
+        let mut runtime = Runtime::new();
+        let res = runtime
+            .eval_str("(let ((x 10) (y 20)) (+ (* x 2) (/ y 2)))")
+            .unwrap();
+        assert_eq!(runtime.deref_int(res).unwrap(), 30);
+
+        let _ = runtime.eval_str("(def double (fn (x) (* x 2)))").unwrap();
+        let res = runtime
+            .eval_str("(let ((nums (list 5 10 15))) (let ((doubled (map double nums))) (first doubled)))")
+            .unwrap();
+        assert_eq!(runtime.deref_int(res).unwrap(), 10);
+    }
+
+    #[test]
+    fn test_logical_operators() {
+        let mut runtime = Runtime::new();
+
+        let res = runtime.eval_str("(if (and (< 5 10) (not (= 3 4))) (+ 7 8) 0)").unwrap();
+        assert_eq!(runtime.deref_int(res).unwrap(), 15);
+
+        let res = runtime.eval_str("(if (or (< 100 50) (and (< 3 5) (< 7 9))) (+ 10 20) 0)").unwrap();
+        assert_eq!(runtime.deref_int(res).unwrap(), 30);
+
+        let res = runtime.eval_str("(if (and (< 10 5) (< 3 5)) 1 2)").unwrap();
+        assert_eq!(runtime.deref_int(res).unwrap(), 2);
+
+        let res = runtime.eval_str("(if (or (< 10 5) (< 10 5)) 1 2)").unwrap();
+        assert_eq!(runtime.deref_int(res).unwrap(), 2);
+    }
 }
