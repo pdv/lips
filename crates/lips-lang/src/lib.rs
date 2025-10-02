@@ -5,42 +5,82 @@ use core::{
     str::FromStr,
 };
 
-use arena::{Arena, Object, Pointer, NIL};
+use arena::{Arena, Cell, Pointer, NIL};
 use heapless::{String, Vec};
 use lexer::{Cursor, Token};
 
 mod arena;
 mod lexer;
 
+#[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Builtin {
-    Def,
-    Defn,
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Lambda,
-    If,
-    Lt,
-    Do,
-    Let,
-    Map,
-    Apply,
-    Eq,
-    And,
-    Or,
-    Not,
-    Gc,
-    Env,
-    Eval,
-    List,
-    Cons,
-    Car,
-    Cdr,
-    First,
-    Second,
-    Third,
+    Def = 0,
+    Defn = 1,
+    Add = 2,
+    Sub = 3,
+    Mul = 4,
+    Div = 5,
+    Lambda = 6,
+    If = 7,
+    Lt = 8,
+    Do = 9,
+    Let = 10,
+    Map = 11,
+    Apply = 12,
+    Eq = 13,
+    And = 14,
+    Or = 15,
+    Not = 16,
+    Gc = 17,
+    Env = 18,
+    Eval = 19,
+    List = 20,
+    Cons = 21,
+    Car = 22,
+    Cdr = 23,
+    First = 24,
+    Second = 25,
+    Third = 26,
+}
+
+impl Builtin {
+    fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Def),
+            1 => Some(Self::Defn),
+            2 => Some(Self::Add),
+            3 => Some(Self::Sub),
+            4 => Some(Self::Mul),
+            5 => Some(Self::Div),
+            6 => Some(Self::Lambda),
+            7 => Some(Self::If),
+            8 => Some(Self::Lt),
+            9 => Some(Self::Do),
+            10 => Some(Self::Let),
+            11 => Some(Self::Map),
+            12 => Some(Self::Apply),
+            13 => Some(Self::Eq),
+            14 => Some(Self::And),
+            15 => Some(Self::Or),
+            16 => Some(Self::Not),
+            17 => Some(Self::Gc),
+            18 => Some(Self::Env),
+            19 => Some(Self::Eval),
+            20 => Some(Self::List),
+            21 => Some(Self::Cons),
+            22 => Some(Self::Car),
+            23 => Some(Self::Cdr),
+            24 => Some(Self::First),
+            25 => Some(Self::Second),
+            26 => Some(Self::Third),
+            _ => None,
+        }
+    }
+
+    fn to_u8(self) -> u8 {
+        self as u8
+    }
 }
 
 impl TryFrom<&str> for Builtin {
@@ -80,17 +120,9 @@ impl TryFrom<&str> for Builtin {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Atom {
-    Char(char),
-    Int(i32),
-    Builtin(Builtin),
-    Identifier(u16),
-}
-
 #[derive(Debug)]
 pub struct Runtime {
-    arena: Arena<Atom>,
+    arena: Arena,
     symbols: Vec<String<10>, 100>,
     env: Pointer,
 }
@@ -127,11 +159,11 @@ impl Runtime {
         }
     }
 
-    fn alloc_inner(&mut self, object: Object<Atom>) -> Result<Pointer, Error> {
-        self.arena.alloc(object).map_err(Error::Arena)
+    fn alloc(&mut self, cell: Cell) -> Result<Pointer, Error> {
+        self.arena.alloc(cell).map_err(Error::Arena)
     }
 
-    fn deref_inner(&self, pointer: Pointer) -> Result<Object<Atom>, Error> {
+    fn deref(&self, pointer: Pointer) -> Result<Cell, Error> {
         self.arena.deref(pointer).ok_or(Error::InvalidPointer)
     }
 
@@ -163,7 +195,7 @@ impl Runtime {
                 };
                 let mut s = NIL;
                 for c in string.chars().rev() {
-                    let c = self.alloc_inner(Object::Atom(Atom::Char(c)))?;
+                    let c = self.alloc(Cell::char(c))?;
                     s = self.cons(c, s)?;
                 }
                 let _ = cursor.next(); // close quote
@@ -171,39 +203,37 @@ impl Runtime {
             }
             Token::CloseDoubleQuote => Err(Error::EndOfList),
             Token::Symbol(s) => {
-                let atom = if let Ok(n) = s.parse::<i32>() {
-                    Atom::Int(n)
+                let cell = if let Ok(n) = s.parse::<i32>() {
+                    Cell::int(n)
                 } else if let Ok(builtin) = Builtin::try_from(s) {
-                    Atom::Builtin(builtin)
+                    Cell::builtin(builtin.to_u8())
                 } else {
                     if let Some(idx) = self.symbols.iter().position(|symbol| symbol.as_str() == s) {
-                        Atom::Identifier(idx as u16)
+                        Cell::symbol(idx as u16)
                     } else {
                         let symbol = String::from_str(s).map_err(|_| Error::InvalidSymbol)?;
                         self.symbols
                             .push(symbol)
                             .map_err(|_| Error::SymbolTableFull)?;
-                        Atom::Identifier(self.symbols.len() as u16 - 1)
+                        Cell::symbol(self.symbols.len() as u16 - 1)
                     }
                 };
-                self.alloc_inner(Object::Atom(atom))
+                self.alloc(cell)
             }
         }
     }
 
     fn int(&mut self, n: i32) -> Result<Pointer, Error> {
-        self.alloc_inner(Object::Atom(Atom::Int(n)))
+        self.alloc(Cell::int(n))
     }
 
     fn cons(&mut self, car: Pointer, cdr: Pointer) -> Result<Pointer, Error> {
-        self.alloc_inner(Object::Cons(car, cdr))
+        self.alloc(Cell::cons(car, cdr))
     }
 
     fn split(&self, pointer: Pointer) -> Result<(Pointer, Pointer), Error> {
-        let Object::Cons(car, cdr) = self.deref_inner(pointer)? else {
-            return Err(Error::TypeError("trying to split atom"));
-        };
-        Ok((car, cdr))
+        let cell = self.deref(pointer)?;
+        cell.as_cons().ok_or(Error::TypeError("trying to split atom"))
     }
 
     fn car(&self, pointer: Pointer) -> Result<Pointer, Error> {
@@ -229,10 +259,8 @@ impl Runtime {
     }
 
     pub fn deref_int(&self, pointer: Pointer) -> Result<i32, Error> {
-        let Object::Atom(Atom::Int(n)) = self.deref_inner(pointer)? else {
-            return Err(Error::TypeError("expected int"));
-        };
-        Ok(n)
+        let cell = self.deref(pointer)?;
+        cell.as_int().ok_or(Error::TypeError("expected int"))
     }
 
     fn lookup(&self, env: Pointer, id: u16) -> Result<Option<Pointer>, Error> {
@@ -240,8 +268,11 @@ impl Runtime {
         while head != NIL {
             let (entry, rest) = self.split(head)?;
             let (key, value) = self.split(entry)?;
-            if self.deref_inner(key)? == Object::Atom(Atom::Identifier(id)) {
-                return Ok(Some(value));
+            let key_cell = self.deref(key)?;
+            if let Some(key_id) = key_cell.as_symbol() {
+                if key_id == id {
+                    return Ok(Some(value));
+                }
             }
             head = rest;
         }
@@ -369,7 +400,7 @@ impl Runtime {
             Eq => {
                 let a = self.eval(self.first(args)?, env)?;
                 let b = self.eval(self.second(args)?, env)?;
-                if self.deref_inner(a)? == self.deref_inner(b)? {
+                if self.deref(a)? == self.deref(b)? {
                     self.int(1) // TODO: true?
                 } else {
                     Ok(NIL)
@@ -447,49 +478,51 @@ impl Runtime {
     }
 
     fn apply(&mut self, function: Pointer, args: Pointer, env: Pointer) -> Result<Pointer, Error> {
-        match self.deref_inner(function)? {
-            Object::Atom(Atom::Builtin(builtin)) => self.builtin(builtin, args, env),
-            Object::Cons(params, body) => {
-                let mut env = env;
-                let mut params = params;
-                let mut args = args;
-                while params != NIL {
-                    if args == NIL {
-                        return Err(Error::ArgCount);
-                    }
-                    let param = self.car(params)?;
-                    let arg = self.eval(self.car(args)?, env)?;
-                    let assignment = self.cons(param, arg)?;
-                    env = self.cons(assignment, env)?;
-                    params = self.cdr(params)?;
-                    args = self.cdr(args)?;
+        let cell = self.deref(function)?;
+        if let Some(builtin_id) = cell.as_builtin() {
+            let builtin = Builtin::from_u8(builtin_id).ok_or(Error::TypeError("invalid builtin"))?;
+            self.builtin(builtin, args, env)
+        } else if let Some((params, body)) = cell.as_cons() {
+            let mut env = env;
+            let mut params = params;
+            let mut args = args;
+            while params != NIL {
+                if args == NIL {
+                    return Err(Error::ArgCount);
                 }
-                let body = self.car(body)?;
-                self.eval(body, env)
+                let param = self.car(params)?;
+                let arg = self.eval(self.car(args)?, env)?;
+                let assignment = self.cons(param, arg)?;
+                env = self.cons(assignment, env)?;
+                params = self.cdr(params)?;
+                args = self.cdr(args)?;
             }
-            _ => Err(Error::TypeError("not a function")),
+            let body = self.car(body)?;
+            self.eval(body, env)
+        } else {
+            Err(Error::TypeError("not a function"))
         }
     }
 
     fn eval(&mut self, form: Pointer, env: Pointer) -> Result<Pointer, Error> {
-        match self.deref_inner(form)? {
-            Object::Atom(atom) => match atom {
-                Atom::Identifier(id) => self
-                    .lookup(env, id)?
-                    .or(self.lookup(self.env, id)?)
-                    .ok_or(Error::NotFound(form)),
-                _ => Ok(form),
-            },
-            Object::Cons(func, args) => {
-                if func == NIL {
-                    return Ok(args);
-                }
-                let func = self.eval(func, env)?;
-                match self.deref_inner(func)? {
-                    Object::Atom(Atom::Char(_)) => Ok(form),
-                    _ => self.apply(func, args, env),
-                }
+        let cell = self.deref(form)?;
+        if let Some(id) = cell.as_symbol() {
+            self.lookup(env, id)?
+                .or(self.lookup(self.env, id)?)
+                .ok_or(Error::NotFound(form))
+        } else if let Some((func, args)) = cell.as_cons() {
+            if func == NIL {
+                return Ok(args);
             }
+            let func = self.eval(func, env)?;
+            let func_cell = self.deref(func)?;
+            if func_cell.as_char().is_some() {
+                Ok(form)
+            } else {
+                self.apply(func, args, env)
+            }
+        } else {
+            Ok(form)
         }
     }
 
@@ -498,14 +531,16 @@ impl Runtime {
     }
 
     fn is_str(&self, pointer: Pointer) -> Result<bool, Error> {
-        match self.deref_inner(pointer) {
-            Ok(Object::Atom(_)) => Ok(false),
-            Ok(Object::Cons(car, _)) => match self.deref_inner(car) {
-                Ok(Object::Atom(Atom::Char(_))) => Ok(true),
-                Ok(_) => Ok(false),
-                Err(Error::InvalidPointer) => Ok(false),
-                Err(e) => Err(e),
-            },
+        match self.deref(pointer) {
+            Ok(cell) if cell.is_cons() => {
+                let (car, _) = cell.as_cons().unwrap();
+                match self.deref(car) {
+                    Ok(car_cell) => Ok(car_cell.as_char().is_some()),
+                    Err(Error::InvalidPointer) => Ok(false),
+                    Err(e) => Err(e),
+                }
+            }
+            Ok(_) => Ok(false),
             Err(Error::InvalidPointer) => Ok(false),
             Err(e) => Err(e),
         }
@@ -515,9 +550,8 @@ impl Runtime {
         let mut head = s;
         while head != NIL {
             let (first, rest) = self.split(head)?;
-            let Object::Atom(Atom::Char(c)) = self.deref_inner(first)? else {
-                return Err(Error::TypeError("pprint_str expected string"));
-            };
+            let cell = self.deref(first)?;
+            let c = cell.as_char().ok_or(Error::TypeError("pprint_str expected string"))?;
             Self::write(writer, c)?;
             head = rest;
         }
@@ -531,31 +565,35 @@ impl Runtime {
         if self.is_str(form)? {
             return self.pprint_str(writer, form);
         }
-        match self.deref_inner(form).unwrap() {
-            Object::Atom(a) => match a {
-                Atom::Identifier(id) => {
-                    let symbol = self.symbols.get(id as usize).ok_or(Error::UnknownSymbol)?;
-                    write!(writer, "{}", symbol).map_err(Error::Handler)
+        let cell = self.deref(form).unwrap();
+        if let Some(id) = cell.as_symbol() {
+            let symbol = self.symbols.get(id as usize).ok_or(Error::UnknownSymbol)?;
+            write!(writer, "{}", symbol).map_err(Error::Handler)
+        } else if let Some(n) = cell.as_int() {
+            write!(writer, "{}", n).map_err(Error::Handler)
+        } else if let Some(builtin_id) = cell.as_builtin() {
+            let builtin = Builtin::from_u8(builtin_id).ok_or(Error::TypeError("invalid builtin"))?;
+            write!(writer, "{:?}", builtin).map_err(Error::Handler)
+        } else if let Some(ch) = cell.as_char() {
+            write!(writer, "{}", ch).map_err(Error::Handler)
+        } else if let Some((car, cdr)) = cell.as_cons() {
+            Self::write(writer, "(")?;
+            self.pprint(writer, car)?;
+            let mut head = cdr;
+            while head != NIL {
+                Self::write(writer, " ")?;
+                if let Ok((car, cdr)) = self.split(head) {
+                    self.pprint(writer, car)?;
+                    head = cdr;
+                } else {
+                    Self::write(writer, ". ")?;
+                    self.pprint(writer, head)?;
+                    head = NIL;
                 }
-                _ => Self::write(writer, a),
-            },
-            Object::Cons(car, cdr) => {
-                Self::write(writer, "(")?;
-                self.pprint(writer, car)?;
-                let mut head = cdr;
-                while head != NIL {
-                    Self::write(writer, " ")?;
-                    if let Ok((car, cdr)) = self.split(head) {
-                        self.pprint(writer, car)?;
-                        head = cdr;
-                    } else {
-                        Self::write(writer, ". ")?;
-                        self.pprint(writer, head)?;
-                        head = NIL;
-                    }
-                }
-                Self::write(writer, ")")
             }
+            Self::write(writer, ")")
+        } else {
+            write!(writer, "unknown").map_err(Error::Handler)
         }
     }
 
@@ -563,17 +601,6 @@ impl Runtime {
         let mut cursor = Cursor::new(form);
         let form = self.read(&mut cursor)?;
         self.eval(form, NIL)
-    }
-}
-
-impl fmt::Display for Atom {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Atom::Builtin(b) => write!(f, "{:?}", b),
-            Atom::Identifier(x) => write!(f, "{}", x),
-            Atom::Int(n) => write!(f, "{}", n),
-            Atom::Char(c) => write!(f, "{}", c),
-        }
     }
 }
 
@@ -637,8 +664,47 @@ mod tests {
     fn assert_int(form: &str, expected: i32) {
         let mut runtime = Runtime::new();
         let res = runtime.eval_str(form).unwrap();
-        let res = runtime.deref_inner(res).unwrap();
-        assert_eq!(res, Object::Atom(Atom::Int(expected)));
+        let actual = runtime.deref_int(res).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_read_simple() {
+        let mut runtime = Runtime::new();
+        let mut cursor = Cursor::new("(+ 1 2)");
+        let _form = runtime.read(&mut cursor).unwrap();
+        // Just test that we can read it without crashing
+    }
+
+    #[test]
+    fn test_eval_int() {
+        let mut runtime = Runtime::new();
+        let ptr = runtime.int(42).unwrap();
+        let result = runtime.eval(ptr, NIL).unwrap();
+        assert_eq!(runtime.deref_int(result).unwrap(), 42);
+    }
+
+    #[test]
+    fn test_eval_builtin() {
+        let mut runtime = Runtime::new();
+        let mut cursor = Cursor::new("+");
+        let ptr = runtime.read(&mut cursor).unwrap();
+        let result = runtime.eval(ptr, NIL).unwrap();
+        // Builtin should eval to itself
+        assert_eq!(ptr, result);
+    }
+
+    #[test]
+    fn test_eval_cons() {
+        let mut runtime = Runtime::new();
+        let mut cursor = Cursor::new("(+ 1 2)");
+        let ptr = runtime.read(&mut cursor).unwrap();
+        let _result = runtime.eval(ptr, NIL).unwrap();
+    }
+
+    #[test]
+    fn test_simple_add() {
+        assert_int("(+ 1 2)", 3);
     }
 
     #[test]
@@ -672,8 +738,7 @@ mod tests {
         let mut runtime = Runtime::new();
         let _ = runtime.eval_str("(def x 2)").unwrap();
         let res = runtime.eval_str("(+ x 1)").unwrap();
-        let res = runtime.deref_inner(res).unwrap();
-        assert_eq!(res, Object::Atom(Atom::Int(3)));
+        assert_eq!(runtime.deref_int(res).unwrap(), 3);
     }
 
     #[test]
@@ -683,8 +748,7 @@ mod tests {
             .eval_str("(def fib (fn (n) (if (< n 3) 1 (+ (fib (- n 1)) (fib (- n 2))))))")
             .unwrap();
         let res = runtime.eval_str("(fib 10)").unwrap();
-        let res = runtime.deref_inner(res).unwrap();
-        assert_eq!(res, Object::Atom(Atom::Int(55)));
+        assert_eq!(runtime.deref_int(res).unwrap(), 55);
     }
 
     #[test]
@@ -694,8 +758,7 @@ mod tests {
             .eval_str("(def f (fn (n) (if (< n 3) 1 (f (- n 1)))))")
             .unwrap();
         let res = runtime.eval_str("(f 100)").unwrap();
-        let res = runtime.deref_inner(res).unwrap();
-        assert_eq!(res, Object::Atom(Atom::Int(1)));
+        assert_eq!(runtime.deref_int(res).unwrap(), 1);
     }
 
     #[test]
@@ -704,8 +767,7 @@ mod tests {
         let _ = runtime.eval_str("(def x 0)").unwrap();
         let _ = runtime.eval_str("(do 5 (def x (+ x 1)))").unwrap();
         let res = runtime.eval_str("x").unwrap();
-        let res = runtime.deref_inner(res).unwrap();
-        assert_eq!(res, Object::Atom(Atom::Int(5)));
+        assert_eq!(runtime.deref_int(res).unwrap(), 5);
     }
 
     #[test]
